@@ -14,7 +14,7 @@ Add the dependency to `mach.toml`:
 ```toml
 [dep.json]
 git = "https://github.com/briar-systems/mach-json"
-version = "^0.1"
+ref = "branch/dev"
 ```
 
 Then bind the library in a source file:
@@ -22,6 +22,8 @@ Then bind the library in a source file:
 ```mach
 use json;
 ```
+
+After `use json;`, `json.parse` reads JSON text into a `json.Value` tree, and the writer functions such as `json.write_value` and `json.object_begin` emit JSON through a `std.io.writer` Writer.
 
 
 ## Contributing
