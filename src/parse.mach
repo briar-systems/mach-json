@@ -1,0 +1,601 @@
+# recursive descent over a document into a value tree
+
+use json.error.JsonError;
+use json.scan.Parser;
+use json.scan.parse_bool;
+use json.scan.parse_null;
+use json.scan.parse_number;
+use json.scan.parse_string;
+use json.scan.skip_ws;
+use json.scan.syntax_at;
+use json.value.OBJECT;
+use json.value.Value;
+use json.value.dnit;
+use json.value.make_array;
+use json.value.make_object;
+use std.allocator;
+use std.memory.raw_copy;
+use std.system.capability;
+use std.types.error.err;
+use std.types.result.res;
+use std.types.size.usize;
+use std.types.string.str;
+
+# how many arrays and objects a value may nest inside before the parser
+# refuses
+#
+# every container descends through parse_value, so the depth is a count taken
+# straight from the document; without a bound the only limit is the stack the
+# process happens to have. this is far past any hand-written document and far
+# short of any stack the parser runs on.
+pub val MAX_DEPTH: usize = 128;
+
+# parse JSON text into a Value tree
+#
+# the tree's container storage comes from `alloc`; release it with dnit. a
+# parse that fails part way releases everything it acquired before reporting.
+# ---
+# src:     pointer to JSON source bytes
+# src_len: length of source in bytes
+# alloc:   allocator for array/object storage
+# ret:     root Value on success, or the failure
+pub fun parse(src: *u8, src_len: usize, alloc: *allocator.Allocator) res[Value, JsonError] {
+    var p: Parser;
+    p.src   = src;
+    p.len   = src_len;
+    p.pos   = 0;
+    p.alloc = alloc;
+
+    skip_ws(?p);
+    val r: res[Value, JsonError] = parse_value(?p, 0);
+    if (sel r.err) { ret r; }
+
+    skip_ws(?p);
+    if (p.pos < p.len) {
+        var root: Value = r.ok;
+        dnit(alloc, ?root);
+        ret res[Value, JsonError].err{JsonError.syntax{p.pos}};
+    }
+
+    ret r;
+}
+
+fun parse_value(p: *Parser, depth: usize) res[Value, JsonError] {
+    skip_ws(p);
+    if (p.pos >= p.len) { ret syntax_at(p.pos); }
+
+    val c: u8 = p.src[p.pos];
+
+    if (c == 'n')                           { ret parse_null(p); }
+    if (c == 't' || c == 'f')               { ret parse_bool(p); }
+    if (c == '"')                           { ret parse_string(p); }
+    if (c == '[')                           { ret parse_array(p, depth + 1); }
+    if (c == '{')                           { ret parse_object(p, depth + 1); }
+    if (c == '-' || (c >= '0' && c <= '9')) { ret parse_number(p); }
+
+    ret syntax_at(p.pos);
+}
+
+# double the children array (and, for an object, the parallel key arrays)
+#
+# a refused acquisition leaves the value exactly as it was; a growth that is
+# refused part way releases what it acquired first.
+fun grow(p: *Parser, v: *Value) err[JsonError] {
+    var new_cap: usize = v.cap * 2;
+    if (v.cap == 0)      { new_cap = 4; }
+    or (new_cap < v.cap) { ret err[JsonError].err{JsonError.alloc{allocator.Error.overflow{}}}; }
+
+    val cr: res[*Value, allocator.Error] = allocator.allocate[Value](p.alloc, new_cap);
+    if (sel cr.err) { ret err[JsonError].err{JsonError.alloc{cr.err}}; }
+    val new_children: *Value = cr.ok;
+
+    var new_keys: *str   = nil;
+    var new_lens: *usize = nil;
+    if (v.kind == OBJECT) {
+        val kr: res[*str, allocator.Error] = allocator.allocate[str](p.alloc, new_cap);
+        if (sel kr.err) {
+            allocator.deallocate[Value](p.alloc, new_children, new_cap);
+            ret err[JsonError].err{JsonError.alloc{kr.err}};
+        }
+        new_keys = kr.ok;
+
+        val lr: res[*usize, allocator.Error] = allocator.allocate[usize](p.alloc, new_cap);
+        if (sel lr.err) {
+            allocator.deallocate[str](p.alloc, new_keys, new_cap);
+            allocator.deallocate[Value](p.alloc, new_children, new_cap);
+            ret err[JsonError].err{JsonError.alloc{lr.err}};
+        }
+        new_lens = lr.ok;
+    }
+
+    if (v.count > 0) {
+        raw_copy(new_children::ptr, v.children::ptr, v.count * $size_of(Value));
+        if (v.kind == OBJECT) {
+            raw_copy(new_keys::ptr, v.keys::ptr, v.count * $size_of(str));
+            raw_copy(new_lens::ptr, v.keys_len::ptr, v.count * $size_of(usize));
+        }
+    }
+    if (v.cap > 0) {
+        allocator.deallocate[Value](p.alloc, v.children, v.cap);
+        if (v.kind == OBJECT) {
+            allocator.deallocate[str](p.alloc, v.keys, v.cap);
+            allocator.deallocate[usize](p.alloc, v.keys_len, v.cap);
+        }
+    }
+
+    v.children = new_children;
+    v.keys     = new_keys;
+    v.keys_len = new_lens;
+    v.cap      = new_cap;
+    ret err[JsonError].ok{};
+}
+
+# release a container built part way and report the failure
+fun abandon(p: *Parser, v: *Value, e: JsonError) res[Value, JsonError] {
+    dnit(p.alloc, v);
+    ret res[Value, JsonError].err{e};
+}
+
+fun parse_array(p: *Parser, depth: usize) res[Value, JsonError] {
+    if (depth > MAX_DEPTH) { ret res[Value, JsonError].err{JsonError.depth{p.pos}}; }
+    p.pos = p.pos + 1;
+    var v: Value = make_array();
+
+    skip_ws(p);
+    if (p.pos < p.len && p.src[p.pos] == ']') {
+        p.pos = p.pos + 1;
+        ret res[Value, JsonError].ok{v};
+    }
+
+    for (p.pos < p.len) {
+        val elem: res[Value, JsonError] = parse_value(p, depth);
+        if (sel elem.err) { ret abandon(p, ?v, elem.err); }
+
+        if (v.count >= v.cap) {
+            val gr: err[JsonError] = grow(p, ?v);
+            if (sel gr.err) {
+                var orphan: Value = elem.ok;
+                dnit(p.alloc, ?orphan);
+                ret abandon(p, ?v, gr.err);
+            }
+        }
+        v.children[v.count] = elem.ok;
+        v.count             = v.count + 1;
+
+        skip_ws(p);
+        if (p.pos >= p.len) { ret abandon(p, ?v, JsonError.syntax{p.pos}); }
+        if (p.src[p.pos] == ']') {
+            p.pos = p.pos + 1;
+            ret res[Value, JsonError].ok{v};
+        }
+        if (p.src[p.pos] != ',') { ret abandon(p, ?v, JsonError.syntax{p.pos}); }
+        p.pos = p.pos + 1;
+    }
+
+    ret abandon(p, ?v, JsonError.syntax{p.pos});
+}
+
+fun parse_object(p: *Parser, depth: usize) res[Value, JsonError] {
+    if (depth > MAX_DEPTH) { ret res[Value, JsonError].err{JsonError.depth{p.pos}}; }
+    p.pos = p.pos + 1;
+    var v: Value = make_object();
+
+    skip_ws(p);
+    if (p.pos < p.len && p.src[p.pos] == '}') {
+        p.pos = p.pos + 1;
+        ret res[Value, JsonError].ok{v};
+    }
+
+    for (p.pos < p.len) {
+        skip_ws(p);
+        if (p.pos >= p.len || p.src[p.pos] != '"') { ret abandon(p, ?v, JsonError.syntax{p.pos}); }
+
+        val key_res: res[Value, JsonError] = parse_string(p);
+        if (sel key_res.err) { ret abandon(p, ?v, key_res.err); }
+        val key_val: Value = key_res.ok;
+
+        skip_ws(p);
+        if (p.pos >= p.len || p.src[p.pos] != ':') { ret abandon(p, ?v, JsonError.syntax{p.pos}); }
+        p.pos = p.pos + 1;
+
+        val val_res: res[Value, JsonError] = parse_value(p, depth);
+        if (sel val_res.err) { ret abandon(p, ?v, val_res.err); }
+
+        if (v.count >= v.cap) {
+            val gr: err[JsonError] = grow(p, ?v);
+            if (sel gr.err) {
+                var orphan: Value = val_res.ok;
+                dnit(p.alloc, ?orphan);
+                ret abandon(p, ?v, gr.err);
+            }
+        }
+
+        v.keys[v.count]     = key_val.str_val;
+        v.keys_len[v.count] = key_val.str_len;
+        v.children[v.count] = val_res.ok;
+        v.count             = v.count + 1;
+
+        skip_ws(p);
+        if (p.pos >= p.len) { ret abandon(p, ?v, JsonError.syntax{p.pos}); }
+        if (p.src[p.pos] == '}') {
+            p.pos = p.pos + 1;
+            ret res[Value, JsonError].ok{v};
+        }
+        if (p.src[p.pos] != ',') { ret abandon(p, ?v, JsonError.syntax{p.pos}); }
+        p.pos = p.pos + 1;
+    }
+
+    ret abandon(p, ?v, JsonError.syntax{p.pos});
+}
+
+$if (capability.HOSTED) {
+    #[testing]
+    use json.decode.value_string_decode;
+    #[testing]
+    use json.value.ARRAY;
+    #[testing]
+    use json.value.BOOL;
+    #[testing]
+    use json.value.Kind;
+    #[testing]
+    use json.value.NULL;
+    #[testing]
+    use json.value.NUMBER;
+    #[testing]
+    use json.value.STRING;
+    #[testing]
+    use json.value.make_string;
+    #[testing]
+    use json.value.value_find;
+    #[testing]
+    use json.value.value_float;
+    #[testing]
+    use json.value.value_get;
+    #[testing]
+    use json.value.value_is_array;
+    #[testing]
+    use json.value.value_is_float;
+    #[testing]
+    use json.value.value_key;
+    #[testing]
+    use json.value.value_key_len;
+    #[testing]
+    use json.value.value_number;
+    use std.allocator.page;
+    use std.allocator.testing;
+    use std.types.bool.bool;
+    use std.types.bool.false;
+    use std.types.bool.true;
+    use std.types.option.opt;
+
+    # parse a nul-terminated document
+    #[testing]
+    pub fun parse_text(src: *u8, a: *allocator.Allocator) res[Value, JsonError] {
+        var n: usize = 0;
+        for (src[n] != 0) { n = n + 1; }
+        ret parse(src, n, a);
+    }
+
+    # whether src parses to a value of `kind` holding `count` children
+    #[testing]
+    fun parses_to(src: *u8, a: *allocator.Allocator, kind: Kind, count: usize) bool {
+        val r: res[Value, JsonError] = parse_text(src, a);
+        if (sel r.err) { ret false; }
+        val v: Value = r.ok;
+        ret v.kind == kind && v.count == count;
+    }
+
+    # whether src parses to an integer number equal to want
+    #[testing]
+    fun parses_to_int(src: *u8, a: *allocator.Allocator, want: i64) bool {
+        val r: res[Value, JsonError] = parse_text(src, a);
+        if (sel r.err) { ret false; }
+        val v: Value = r.ok;
+        ret v.kind == NUMBER && !value_is_float(?v) && v.num_val == want;
+    }
+
+    # whether src parses to a float number within 0.001 of want
+    #[testing]
+    fun parses_to_float(src: *u8, a: *allocator.Allocator, want: f64) bool {
+        val r: res[Value, JsonError] = parse_text(src, a);
+        if (sel r.err) { ret false; }
+        val v: Value = r.ok;
+        if (v.kind != NUMBER || !value_is_float(?v)) { ret false; }
+        val f: f64 = value_float(?v);
+        ret f > want - 0.001 && f < want + 0.001;
+    }
+
+    # every scalar and container kind parses, whitespace around tokens included
+    test json__parse_kinds {
+        var a: allocator.Allocator;
+        page.make(?a);
+        if (!parses_to("null", ?a, NULL, 0))               { ret 1; }
+        if (!parses_to("[]", ?a, ARRAY, 0))                { ret 2; }
+        if (!parses_to("{}", ?a, OBJECT, 0))               { ret 3; }
+        if (!parses_to("  { \"a\" : 1 } ", ?a, OBJECT, 1)) { ret 4; }
+
+        val t: res[Value, JsonError] = parse_text("true", ?a);
+        if (sel t.err) { ret 5; }
+        val tv: Value = t.ok;
+        if (tv.kind != BOOL || tv.bool_val != 1) { ret 6; }
+        val f: res[Value, JsonError] = parse_text("false", ?a);
+        if (sel f.err) { ret 7; }
+        val fv: Value = f.ok;
+        if (fv.kind != BOOL || fv.bool_val != 0) { ret 8; }
+
+        val s: res[Value, JsonError] = parse_text("\"hello\"", ?a);
+        if (sel s.err) { ret 9; }
+        val sv: Value = s.ok;
+        if (sv.kind != STRING || sv.str_len != 5) { ret 10; }
+        val sp: *u8 = sv.str_val::*u8;
+        if (sp[0] != 'h' || sp[4] != 'o') { ret 11; }
+
+        val o: res[Value, JsonError] = parse_text("{\"x\":[1,2],\"y\":3}", ?a);
+        if (sel o.err) { ret 12; }
+        val ov: Value = o.ok;
+        if (ov.kind != OBJECT || ov.count != 2) { ret 13; }
+        val arr: *Value = ?ov.children[0];
+        if (arr.kind != ARRAY || arr.count != 2)                          { ret 14; }
+        if (arr.children[0].num_val != 1 || arr.children[1].num_val != 2) { ret 15; }
+        if (ov.children[1].num_val != 3)                                  { ret 16; }
+        ret 0;
+    }
+
+    # a number is an integer unless it has a fraction or an exponent, and an
+    # empty fraction or exponent is refused
+    test json__parse_numbers {
+        var a: allocator.Allocator;
+        page.make(?a);
+        if (!parses_to_int("0", ?a, 0))             { ret 1; }
+        if (!parses_to_int("42", ?a, 42))           { ret 2; }
+        if (!parses_to_int("-7", ?a, -7))           { ret 3; }
+        if (!parses_to_float("-2.5", ?a, -2.5))     { ret 4; }
+        if (!parses_to_float("1e3", ?a, 1000.0))    { ret 5; }
+        if (!parses_to_float("6.022E2", ?a, 602.2)) { ret 6; }
+        if (!parses_to_float("5e-2", ?a, 0.05))     { ret 7; }
+
+        val m: res[Value, JsonError] = parse_text("[1,2.5,3]", ?a);
+        if (sel m.err) { ret 8; }
+        val mv: Value = m.ok;
+        if (value_is_float(?mv.children[0]) || !value_is_float(?mv.children[1])) { ret 9; }
+        if (value_is_float(?mv.children[2]))                                     { ret 10; }
+        if (value_float(?mv.children[2]) != 3.0)                                 { ret 11; }
+
+        val empty_frac: res[Value, JsonError] = parse_text("1.", ?a);
+        if (!sel empty_frac.err) { ret 12; }
+        val empty_exp: res[Value, JsonError] = parse_text("1e", ?a);
+        if (!sel empty_exp.err) { ret 13; }
+        val frac_empty_exp: res[Value, JsonError] = parse_text("1.5e", ?a);
+        if (!sel frac_empty_exp.err) { ret 14; }
+        ret 0;
+    }
+
+    # an index past the last child, a key past the last entry, and a lookup on a
+    # value that is not an object are all absence
+    test json__value_lookup {
+        var a: allocator.Allocator;
+        page.make(?a);
+        val src: str                   = "{\"a\":[1,2],\"b\":2}";
+        val r:   res[Value, JsonError] = parse(src::*u8, 17, ?a);
+        if (sel r.err) { ret 1; }
+        var v: Value = r.ok;
+        fin { dnit(?a, ?v); }
+
+        val found: opt[*Value] = value_find(?v, "b");
+        if (sel found.none)          { ret 14; }
+        if (found.some.num_val != 2) { ret 15; }
+        val missing: opt[*Value] = value_find(?v, "z");
+        if (sel missing.some) { ret 16; }
+
+        val first: opt[*Value] = value_get(?v, 0);
+        if (sel first.none)              { ret 2; }
+        if (!value_is_array(first.some)) { ret 3; }
+        val past: opt[*Value] = value_get(?v, 2);
+        if (sel past.some) { ret 4; }
+
+        val key: opt[str] = value_key(?v, 1);
+        if (sel key.none)                                    { ret 5; }
+        if (key.some[0] != 'b' || value_key_len(?v, 1) != 1) { ret 6; }
+        val no_key: opt[str] = value_key(?v, 2);
+        if (sel no_key.some) { ret 7; }
+
+        val arr: opt[*Value] = value_get(?v, 0);
+        if (sel arr.none) { ret 8; }
+        val elem: opt[*Value] = value_get(arr.some, 1);
+        if (sel elem.none)                { ret 9; }
+        if (value_number(elem.some) != 2) { ret 10; }
+        val no_elem: opt[*Value] = value_get(arr.some, 2);
+        if (sel no_elem.some) { ret 11; }
+        val array_key: opt[str] = value_key(arr.some, 0);
+        if (sel array_key.some) { ret 12; }
+        val array_find: opt[*Value] = value_find(arr.some, "a");
+        if (sel array_find.some) { ret 13; }
+        ret 0;
+    }
+
+    # a document whose containers all grow past their first capacity, so every
+    # acquisition site (children, keys, key lengths, and their regrowth) is hit
+    #[testing]
+    fun growth_doc() str {
+        ret "{\"a\":[1,2,3,4,5,6],\"b\":{\"x\":1,\"y\":2,\"z\":3,\"w\":4,\"v\":5},\"c\":\"s\",\"d\":null,\"e\":true}";
+    }
+
+    # a parse followed by dnit leaves the allocator exactly where it started, and
+    # a second dnit of the released tree is a no-op
+    test json__parse_then_dnit_returns_every_byte {
+        var tracker: testing.Testing;
+        val made:    err[allocator.Error] = testing.make(?tracker);
+        if (sel made.err) { ret 1; }
+        fin { testing.dnit(?tracker); }
+        val a: *allocator.Allocator = testing.allocator_of(?tracker);
+
+        val src: str   = growth_doc();
+        var n:   usize = 0;
+        for (src[n] != 0) { n = n + 1; }
+        val r: res[Value, JsonError] = parse(src::*u8, n, a);
+        if (sel r.err) { ret 2; }
+        var v: Value = r.ok;
+        if (v.count != 5)                      { ret 3; }
+        if (testing.live_count(?tracker) == 0) { ret 4; }
+
+        val released: err[allocator.Error] = dnit(a, ?v);
+        if (sel released.err)                                { ret 5; }
+        if (testing.live_count(?tracker) != 0)               { ret 6; }
+        if (v.count != 0 || v.cap != 0 || v.children != nil) { ret 7; }
+        val again: err[allocator.Error] = dnit(a, ?v);
+        if (sel again.err)                     { ret 8; }
+        if (testing.live_count(?tracker) != 0) { ret 9; }
+        ret 0;
+    }
+
+    # a document that fails part way releases what it acquired before reporting
+    test json__failed_parse_strands_nothing {
+        var tracker: testing.Testing;
+        val made:    err[allocator.Error] = testing.make(?tracker);
+        if (sel made.err) { ret 1; }
+        fin { testing.dnit(?tracker); }
+        val a: *allocator.Allocator = testing.allocator_of(?tracker);
+
+        # the array and the nested object both allocated before the `x` is met
+        val src: str   = "{\"a\":[1,2,3,4,5,{\"k\":1,\"j\":2}],\"b\":x}";
+        var n:   usize = 0;
+        for (src[n] != 0) { n = n + 1; }
+        val r: res[Value, JsonError] = parse(src::*u8, n, a);
+        if (!sel r.err)                        { ret 2; }
+        if (!sel r.err.syntax)                 { ret 3; }
+        if (r.err.syntax != 35)                { ret 4; }
+        if (testing.live_count(?tracker) != 0) { ret 5; }
+
+        # trailing content after a complete value releases the value
+        val src2: str                   = "[1,2] x";
+        val r2:   res[Value, JsonError] = parse(src2::*u8, 7, a);
+        if (!sel r2.err)                       { ret 6; }
+        if (!sel r2.err.syntax)                { ret 7; }
+        if (r2.err.syntax != 6)                { ret 8; }
+        if (testing.live_count(?tracker) != 0) { ret 9; }
+        ret 0;
+    }
+
+    # each acquisition site refused in turn: the parse reports alloc, nothing is
+    # leaked, and the allocator's refusal is the one reported
+    test json__refused_acquisition_strands_nothing {
+        val src: str   = growth_doc();
+        var n:   usize = 0;
+        for (src[n] != 0) { n = n + 1; }
+
+        var ordinal: usize = 1;
+        for (ordinal <= 32) {
+            var tracker: testing.Testing;
+            val made:    err[allocator.Error] = testing.make(?tracker);
+            if (sel made.err) { ret 1; }
+            testing.fail_at_ordinal(?tracker, ordinal);
+            val a: *allocator.Allocator = testing.allocator_of(?tracker);
+
+            val r:        res[Value, JsonError] = parse(src::*u8, n, a);
+            var accepted: bool                  = false;
+            if (sel r.err) {
+                if (!sel r.err.alloc) {
+                    testing.dnit(?tracker);
+                    ret 2;
+                }
+                if (!sel r.err.alloc.exhausted) {
+                    testing.dnit(?tracker);
+                    ret 3;
+                }
+            }
+            if (sel r.ok) {
+                var v: Value = r.ok;
+                accepted = true;
+                dnit(a, ?v);
+            }
+            val leaked:   bool  = testing.live_count(?tracker) != 0 || testing.double_free_count(?tracker) != 0;
+            val attempts: usize = testing.attempt_count(?tracker);
+            testing.dnit(?tracker);
+            if (leaked) { ret 4; }
+            if (accepted) {
+                # the refusal never fired: every acquisition succeeded before it
+                if (attempts >= ordinal) { ret 5; }
+                if (ordinal < 4)         { ret 6; }
+                ret 0;
+            }
+            if (attempts != ordinal) { ret 7; }
+            ordinal = ordinal + 1;
+        }
+        ret 8;
+    }
+
+    # build n open brackets followed by n close brackets
+    #[testing]
+    fun nest_doc(buf: *u8, n: usize) usize {
+        var i: usize = 0;
+        for (i < n) {
+            buf[i] = '[';
+            i      = i + 1;
+        }
+        i = 0;
+        for (i < n) {
+            buf[n + i] = ']';
+            i          = i + 1;
+        }
+        ret n + n;
+    }
+
+    # the bound is where it says it is: MAX_DEPTH nested arrays are accepted and
+    # one more is refused as depth, with nothing stranded
+    test json__nesting_bound {
+        var tracker: testing.Testing;
+        val made:    err[allocator.Error] = testing.make(?tracker);
+        if (sel made.err) { ret 1; }
+        fin { testing.dnit(?tracker); }
+        val a: *allocator.Allocator = testing.allocator_of(?tracker);
+
+        var buf:    [512]u8;
+        val ok_len: usize                 = nest_doc(?buf[0], MAX_DEPTH);
+        val fine:   res[Value, JsonError] = parse(?buf[0], ok_len, a);
+        if (sel fine.err) { ret 2; }
+        var v: Value = fine.ok;
+        dnit(a, ?v);
+        if (testing.live_count(?tracker) != 0) { ret 3; }
+
+        val deep_len: usize                 = nest_doc(?buf[0], MAX_DEPTH + 1);
+        val deep:     res[Value, JsonError] = parse(?buf[0], deep_len, a);
+        if (!sel deep.err)                     { ret 4; }
+        if (!sel deep.err.depth)               { ret 5; }
+        if (deep.err.depth != MAX_DEPTH)       { ret 6; }
+        if (testing.live_count(?tracker) != 0) { ret 7; }
+        ret 0;
+    }
+
+    # a scalar document's failures name the offending byte
+    test json__syntax_failures_carry_the_offset {
+        var a: allocator.Allocator;
+        page.make(?a);
+
+        val cut: res[Value, JsonError] = parse("[1,2", 4, ?a);
+        if (!sel cut.err)        { ret 1; }
+        if (!sel cut.err.syntax) { ret 1; }
+        if (cut.err.syntax != 4) { ret 1; }
+
+        val lit: res[Value, JsonError] = parse("trux", 4, ?a);
+        if (!sel lit.err)        { ret 2; }
+        if (!sel lit.err.syntax) { ret 2; }
+        if (lit.err.syntax != 0) { ret 2; }
+
+        val colon: res[Value, JsonError] = parse("{\"a\" 1}", 7, ?a);
+        if (!sel colon.err)        { ret 3; }
+        if (!sel colon.err.syntax) { ret 3; }
+        if (colon.err.syntax != 5) { ret 3; }
+
+        val empty: res[Value, JsonError] = parse("  ", 2, ?a);
+        if (!sel empty.err)        { ret 4; }
+        if (!sel empty.err.syntax) { ret 4; }
+        if (empty.err.syntax != 2) { ret 4; }
+
+        val bad: Value                 = make_string("ab\\q", 4);
+        val esc: res[usize, JsonError] = value_string_decode(?bad, nil, 0);
+        if (!sel esc.err)        { ret 5; }
+        if (!sel esc.err.syntax) { ret 5; }
+        if (esc.err.syntax != 3) { ret 5; }
+        ret 0;
+    }
+}

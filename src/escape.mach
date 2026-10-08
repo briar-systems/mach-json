@@ -1,0 +1,202 @@
+# escaping string bodies under an explicit policy
+
+use json.stream.Emit;
+use json.stream.put;
+use json.stream.put_byte;
+use json.stream.put_str;
+use std.io.writer.WriteError;
+use std.types.error.err;
+use std.types.result.res;
+use std.types.size.usize;
+
+# the escape policy for a JSON string body: how bytes >= 0x80 are rendered
+pub def EscapePolicy: u8;
+
+# structural-utf8-verbatim: escape '"', '\', and the C0 controls only; every
+# other byte, including UTF-8 lead/continuation bytes, passes through verbatim.
+pub val ESCAPE_VERBATIM: EscapePolicy = 0;
+
+# ensure-ascii: as ESCAPE_VERBATIM for bytes < 0x80, but each byte >= 0x80 is
+# UTF-8 decoded and emitted as a \uXXXX escape (U+FFFD on invalid input), so
+# every emitted byte is printable ASCII.
+pub val ESCAPE_ENSURE_ASCII: EscapePolicy = 1;
+
+# escape one code unit of `s` starting at `i` as a JSON string body, returning
+# the next byte index.
+#
+# '"', '\', and the C0 controls become their short or \u00XX escapes; printable
+# ASCII passes through verbatim. a byte >= 0x80 passes through verbatim under
+# ESCAPE_VERBATIM, or begins a UTF-8 sequence decoded to a \uXXXX escape under
+# ESCAPE_ENSURE_ASCII. under ESCAPE_ENSURE_ASCII `s` must be null-terminated or
+# hold its continuation bytes within bounds, since a multi-byte decode reads
+# past `i`; a NUL or bad byte resynchronizes as one U+FFFD escape.
+# ---
+# e:      the emission to write through
+# policy: the escape policy
+# s:      the source bytes
+# i:      the byte index to escape
+# ret:    the index of the next byte to process, or the writer's failure
+pub fun escape_unit(e: *Emit, policy: EscapePolicy, s: *u8, i: usize) res[usize, WriteError] {
+    val c:    u8    = s[i];
+    var wr:   err[WriteError];
+    var next: usize = i + 1;
+    if (c == '"')                  { wr = put_str(e, "\\\""); }
+    or (c == '\\')                 { wr = put_str(e, "\\\\"); }
+    or (c == 0x08)                 { wr = put_str(e, "\\b"); }
+    or (c == 0x09)                 { wr = put_str(e, "\\t"); }
+    or (c == 0x0a)                 { wr = put_str(e, "\\n"); }
+    or (c == 0x0c)                 { wr = put_str(e, "\\f"); }
+    or (c == 0x0d)                 { wr = put_str(e, "\\r"); }
+    or (c < 0x20)                  { wr = write_u_hex(e, c::u32); }
+    or (c < 0x80)                  { wr = put_byte(e, c); }
+    or (policy == ESCAPE_VERBATIM) { wr = put_byte(e, c); }
+    or                             { ret write_utf8_escape(e, s, i); }
+    if (sel wr.err)                { ret res[usize, WriteError].err{wr.err}; }
+    ret res[usize, WriteError].ok{next};
+}
+
+# escape s[0..slen) as a JSON string body (no surrounding quotes) under policy
+pub fun escape_bytes(e: *Emit, policy: EscapePolicy, s: *u8, slen: usize) err[WriteError] {
+    var i: usize = 0;
+    for (i < slen) {
+        val r: res[usize, WriteError] = escape_unit(e, policy, s, i);
+        if (sel r.err) { ret err[WriteError].err{r.err}; }
+        i = r.ok;
+    }
+    ret err[WriteError].ok{};
+}
+
+# decode the UTF-8 sequence at `i` and emit it as a \uXXXX escape, returning the
+# index past the sequence.
+#
+# Full RFC 3629 validation: the lead byte fixes the length and the first
+# continuation byte's allowed range, which together reject overlong encodings
+# (0xC0/0xC1, 0xE0 80-9F, 0xF0 80-8F), the UTF-16 surrogate range (0xED A0-BF),
+# and code points above U+10FFFF (0xF4 90-BF); invalid lead bytes (0x80-0xBF,
+# 0xF5-0xFF) and any bad or truncated continuation are rejected too. A rejected
+# sequence emits the U+FFFD replacement escape and consumes exactly one byte, so
+# the scan resynchronizes on the next byte.
+# ---
+# e:   the emission to write through
+# s:   the source (a NUL terminates any truncated sequence)
+# i:   the index of the sequence's lead byte (>= 0x80)
+# ret: the index of the next byte to process, or the writer's failure
+fun write_utf8_escape(e: *Emit, s: *u8, i: usize) res[usize, WriteError] {
+    val b0: u8 = s[i];
+
+    # length, plus the tightened [lo, hi] range for the first continuation byte
+    # that pins overlong / surrogate / out-of-range sequences to their lead.
+    var len: usize = 0;
+    var lo:  u8    = 0x80;
+    var hi:  u8    = 0xBF;
+    var cp:  u32   = 0;
+    if (b0 >= 0xC2 && b0 <= 0xDF) {
+        len = 2;
+        cp  = (b0 & 0x1F)::u32;
+    }
+    or (b0 == 0xE0) {
+        len = 3;
+        lo  = 0xA0;
+        cp  = (b0 & 0x0F)::u32;
+    }
+    or (b0 >= 0xE1 && b0 <= 0xEC) {
+        len = 3;
+        cp  = (b0 & 0x0F)::u32;
+    }
+    or (b0 == 0xED) {
+        len = 3;
+        hi  = 0x9F;
+        cp  = (b0 & 0x0F)::u32;
+    }
+    or (b0 >= 0xEE && b0 <= 0xEF) {
+        len = 3;
+        cp  = (b0 & 0x0F)::u32;
+    }
+    or (b0 == 0xF0) {
+        len = 4;
+        lo  = 0x90;
+        cp  = (b0 & 0x07)::u32;
+    }
+    or (b0 >= 0xF1 && b0 <= 0xF3) {
+        len = 4;
+        cp  = (b0 & 0x07)::u32;
+    }
+    or (b0 == 0xF4) {
+        len = 4;
+        hi  = 0x8F;
+        cp  = (b0 & 0x07)::u32;
+    }
+    or {
+        val bad: err[WriteError] = write_u_hex(e, 0xFFFD);
+        if (sel bad.err) { ret res[usize, WriteError].err{bad.err}; }
+        ret res[usize, WriteError].ok{i + 1};
+    }
+
+    var k: usize = 1;
+    var j: usize = i + 1;
+    for (k < len) {
+        val cb: u8 = s[j];
+        # the first continuation byte carries the tightened range; the rest span
+        # the full 0x80-0xBF. a NUL (truncated sequence) fails the lower bound.
+        var clo: u8 = 0x80;
+        var chi: u8 = 0xBF;
+        if (k == 1) {
+            clo = lo;
+            chi = hi;
+        }
+        if (cb < clo || cb > chi) {
+            val bad: err[WriteError] = write_u_hex(e, 0xFFFD);
+            if (sel bad.err) { ret res[usize, WriteError].err{bad.err}; }
+            ret res[usize, WriteError].ok{i + 1};
+        }
+        cp = (cp << 6) | (cb & 0x3F)::u32;
+        j  = j + 1;
+        k  = k + 1;
+    }
+
+    val wr: err[WriteError] = write_codepoint(e, cp);
+    if (sel wr.err) { ret res[usize, WriteError].err{wr.err}; }
+    ret res[usize, WriteError].ok{i + len};
+}
+
+# emit a valid Unicode scalar as a \uXXXX escape, or a surrogate pair when
+# astral.
+#
+# `cp` is a validated scalar (U+0000-U+10FFFF, never a surrogate), so the astral
+# branch always yields a well-formed high/low surrogate pair.
+# ---
+# e:  the emission to write through
+# cp: the Unicode scalar value
+fun write_codepoint(e: *Emit, cp: u32) err[WriteError] {
+    if (cp <= 0xFFFF) { ret write_u_hex(e, cp); }
+    val v:     u32             = cp - 0x10000;
+    val hi:    u32             = 0xD800 + (v >> 10);
+    val lo:    u32             = 0xDC00 + (v & 0x3FF);
+    val first: err[WriteError] = write_u_hex(e, hi);
+    if (sel first.err) { ret first; }
+    ret write_u_hex(e, lo);
+}
+
+# emit a \u escape for a 16-bit value
+# ---
+# e:    the emission to write through
+# code: the 16-bit value (only the low 16 bits are used)
+fun write_u_hex(e: *Emit, code: u32) err[WriteError] {
+    var esc: [6]u8;
+    esc[0] = '\\';
+    esc[1] = 'u';
+    esc[2] = hex_digit((code >> 12) & 0xF);
+    esc[3] = hex_digit((code >> 8) & 0xF);
+    esc[4] = hex_digit((code >> 4) & 0xF);
+    esc[5] = hex_digit(code & 0xF);
+    ret put(e, ?esc[0], 6);
+}
+
+# map a nibble (0-15) to its lowercase hexadecimal ASCII digit
+# ---
+# n:   the nibble value
+# ret: the ASCII digit byte
+fun hex_digit(n: u32) u8 {
+    if (n < 10) { ret n::u8 + '0'; }
+    ret n::u8 - 10 + 'a';
+}

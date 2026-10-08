@@ -1,0 +1,236 @@
+# the tree emitter: a value written through a writer as json text
+
+use json.buffer.BufWriter;
+use json.buffer.bufw_put;
+use json.escape.ESCAPE_VERBATIM;
+use json.escape.escape_bytes;
+use json.stream.Emit;
+use json.stream.put_byte;
+use json.stream.put_f64;
+use json.stream.put_i64;
+use json.stream.put_str;
+use json.value.ARRAY;
+use json.value.BOOL;
+use json.value.NULL;
+use json.value.NUMBER;
+use json.value.OBJECT;
+use json.value.STRING;
+use json.value.Value;
+use std.io.writer;
+use std.io.writer.WriteError;
+use std.system.capability;
+use std.types.error.err;
+use std.types.result.res;
+use std.types.size.usize;
+
+# emit a Value as JSON text into a buffer
+#
+# strings and object keys are escaped under ESCAPE_VERBATIM: '"', '\', and
+# control bytes 0x00-0x1F are escaped (short escapes \b \t \n \f \r, else
+# \u00xx); other bytes, including valid UTF-8, are written verbatim. str_val
+# and keys are treated as logical bytes, so emitting a PARSED tree double-
+# escapes any escapes the source contained -- see the file header (mach-std#340).
+# ---
+# v:   value to emit
+# buf: destination buffer
+# len: size of destination buffer in bytes
+# ret: number of bytes written (may exceed len if buffer too small)
+pub fun emit(v: *Value, buf: *u8, len: usize) usize {
+    var b: BufWriter;
+    b.data = buf;
+    b.cap  = len;
+    b.pos  = 0;
+    var w: writer.Writer;
+    w.ctx     = (?b)::ptr;
+    w.f_write = bufw_write;
+    # the counting sink accepts every byte, so the outcome is always ok
+    write_value(?w, v);
+    ret b.pos;
+}
+
+# emit a Value as JSON text through a writer
+#
+# the same rendering as emit, to any sink. the outcome is the writer's, with
+# the bytes persisted before a failure in its payload.
+# ---
+# w:   the writer to emit through
+# v:   value to emit
+# ret: ok, or the writer's failure with the persisted prefix
+pub fun write_value(w: *writer.Writer, v: *Value) err[WriteError] {
+    var e: Emit = Emit{w: w, total: 0};
+    ret emit_value(?e, v);
+}
+
+# writer callback for BufWriter: copies the bytes that fit and advances pos by
+# the full request, always reporting a complete write.
+fun bufw_write(ctx: ptr, buf: *u8, len: usize) res[usize, WriteError] {
+    val s: *BufWriter = ctx::*BufWriter;
+    var i: usize      = 0;
+    for (i < len) {
+        bufw_put(s, buf[i]);
+        i = i + 1;
+    }
+    ret res[usize, WriteError].ok{len};
+}
+
+fun emit_value(e: *Emit, v: *Value) err[WriteError] {
+    if (v.kind == NULL) { ret put_str(e, "null"); }
+
+    if (v.kind == BOOL) {
+        if (v.bool_val != 0) { ret put_str(e, "true"); }
+        ret put_str(e, "false");
+    }
+
+    if (v.kind == NUMBER) {
+        if (v.is_float != 0) { ret put_f64(e, v.float_val); }
+        ret put_i64(e, v.num_val);
+    }
+
+    if (v.kind == STRING) {
+        val open: err[WriteError] = put_byte(e, '"');
+        if (sel open.err) { ret open; }
+        val body: err[WriteError] = escape_bytes(e, ESCAPE_VERBATIM, v.str_val::*u8, v.str_len);
+        if (sel body.err) { ret body; }
+        ret put_byte(e, '"');
+    }
+
+    if (v.kind == ARRAY) {
+        val open: err[WriteError] = put_byte(e, '[');
+        if (sel open.err) { ret open; }
+        var i: usize = 0;
+        for (i < v.count) {
+            if (i > 0) {
+                val sep: err[WriteError] = put_byte(e, ',');
+                if (sel sep.err) { ret sep; }
+            }
+            val elem: err[WriteError] = emit_value(e, ?v.children[i]);
+            if (sel elem.err) { ret elem; }
+            i = i + 1;
+        }
+        ret put_byte(e, ']');
+    }
+
+    if (v.kind == OBJECT) {
+        val open: err[WriteError] = put_byte(e, '{');
+        if (sel open.err) { ret open; }
+        var i: usize = 0;
+        for (i < v.count) {
+            if (i > 0) {
+                val sep: err[WriteError] = put_byte(e, ',');
+                if (sel sep.err) { ret sep; }
+            }
+            val q1: err[WriteError] = put_byte(e, '"');
+            if (sel q1.err) { ret q1; }
+            val key: err[WriteError] = escape_bytes(e, ESCAPE_VERBATIM, v.keys[i]::*u8, v.keys_len[i]);
+            if (sel key.err) { ret key; }
+            val q2: err[WriteError] = put_str(e, "\":");
+            if (sel q2.err) { ret q2; }
+            val elem: err[WriteError] = emit_value(e, ?v.children[i]);
+            if (sel elem.err) { ret elem; }
+            i = i + 1;
+        }
+        ret put_byte(e, '}');
+    }
+
+    ret err[WriteError].ok{};
+}
+
+$if (capability.HOSTED) {
+    #[testing]
+    use json.buffer.bytes_are;
+    #[testing]
+    use json.decode.decode_check;
+    #[testing]
+    use json.error.JsonError;
+    #[testing]
+    use json.parse.parse;
+    #[testing]
+    use json.parse.parse_text;
+    #[testing]
+    use json.value.make_number;
+    #[testing]
+    use json.value.make_object;
+    #[testing]
+    use json.value.make_string;
+    use std.allocator;
+    use std.allocator.page;
+    use std.types.bool.bool;
+    use std.types.bool.false;
+    use std.types.string.str;
+
+    # whether src parses and emits back to exactly src
+    #[testing]
+    fun emits_back(src: *u8, a: *allocator.Allocator) bool {
+        val r: res[Value, JsonError] = parse_text(src, a);
+        if (sel r.err) { ret false; }
+        val v:   Value = r.ok;
+        var buf: [64]u8;
+        val n:   usize = emit(?v, ?buf[0], 64);
+        ret bytes_are(?buf[0], n, src);
+    }
+
+    # a parsed document emits back byte for byte, keys in order
+    test json__emit_roundtrips_the_document {
+        var a: allocator.Allocator;
+        page.make(?a);
+        if (!emits_back("null", ?a))                   { ret 1; }
+        if (!emits_back("true", ?a))                   { ret 2; }
+        if (!emits_back("123", ?a))                    { ret 3; }
+        if (!emits_back("1.5", ?a))                    { ret 4; }
+        if (!emits_back("[1,2,3]", ?a))                { ret 5; }
+        if (!emits_back("{\"a\":1,\"b\":[true]}", ?a)) { ret 6; }
+        ret 0;
+    }
+
+    # string values and object keys escape quotes, backslashes and control
+    # bytes, and the escaped object parses back
+    test json__emit_escapes_strings_and_keys {
+        var a: allocator.Allocator;
+        page.make(?a);
+        var buf: [48]u8;
+
+        var raw: [11]u8 = [11]u8{'a', '"', 'b', '\\', 'c', 0x08, 0x09, 0x0a, 0x0c, 0x0d, 0x01};
+        val s:   Value  = make_string(((?raw[0])::usize)::str, 11);
+        val sn:  usize  = emit(?s, ?buf[0], 48);
+        if (!bytes_are(?buf[0], sn, "\"a\\\"b\\\\c\\b\\t\\n\\f\\r\\u0001\"")) { ret 1; }
+
+        var keyraw:   [3]u8    = [3]u8{'a', '"', 'b'};
+        var keys:     [1]str   = [1]str{((?keyraw[0])::usize)::str};
+        var klens:    [1]usize = [1]usize{3};
+        var children: [1]Value;
+        children[0] = make_number(1);
+        var o: Value = make_object();
+        o.keys     = ?keys[0];
+        o.keys_len = ?klens[0];
+        o.children = ?children[0];
+        o.count    = 1;
+        val on: usize = emit(?o, ?buf[0], 48);
+        if (!bytes_are(?buf[0], on, "{\"a\\\"b\":1}")) { ret 2; }
+        val r: res[Value, JsonError] = parse(?buf[0], on, ?a);
+        if (sel r.err) { ret 3; }
+        val rv: Value = r.ok;
+        if (rv.kind != OBJECT || rv.count != 1) { ret 4; }
+        ret 0;
+    }
+
+    # emit escapes logical bytes to wire, parse stores the wire bytes raw, and
+    # value_string_decode recovers the original logical bytes
+    test value_string_decode__roundtrip_emit_then_parse {
+        var a: allocator.Allocator;
+        page.make(?a);
+
+        # logical bytes: a <newline> " \ b
+        var logical: [5]u8 = [5]u8{'a', 0x0a, '"', '\\', 'b'};
+        val src:     Value = make_string(((?logical[0])::usize)::str, 5);
+
+        var wire: [32]u8;
+        val wn:   usize = emit(?src, ?wire[0], 32);
+
+        val r: res[Value, JsonError] = parse(?wire[0], wn, ?a);
+        if (sel r.err) { ret 1; }
+        val pv: Value = r.ok;
+        if (pv.kind != STRING)                                          { ret 2; }
+        if (!decode_check(pv.str_val::*u8, pv.str_len, ?logical[0], 5)) { ret 3; }
+        ret 0;
+    }
+}

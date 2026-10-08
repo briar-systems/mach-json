@@ -1,0 +1,53 @@
+# an emission's writer, with the bytes it has persisted so far
+
+use std.format;
+use std.io.writer;
+use std.io.writer.WriteError;
+use std.types.error.err;
+use std.types.result.res;
+use std.types.size.usize;
+use std.types.string.str;
+
+# a writer and the bytes this emission has persisted through it so far
+#
+# every emitting function writes through one of these, so a failure anywhere
+# in a call reports the whole prefix that call persisted, however deep the
+# write that failed.
+pub rec Emit {
+    w:     *writer.Writer;
+    total: usize;
+}
+
+# write bytes, adding to the running total or rebasing the failure onto it
+pub fun put(e: *Emit, buf: *u8, len: usize) err[WriteError] {
+    val r: res[usize, WriteError] = format.write_bytes(e.w, buf, len);
+    if (sel r.err) { ret err[WriteError].err{writer.advance(r.err, e.total)}; }
+    e.total = e.total + r.ok;
+    ret err[WriteError].ok{};
+}
+
+pub fun put_str(e: *Emit, s: str) err[WriteError] {
+    val r: res[usize, WriteError] = format.write_str(e.w, s);
+    if (sel r.err) { ret err[WriteError].err{writer.advance(r.err, e.total)}; }
+    e.total = e.total + r.ok;
+    ret err[WriteError].ok{};
+}
+
+pub fun put_byte(e: *Emit, c: u8) err[WriteError] {
+    val x: u8 = c;
+    ret put(e, ?x, 1);
+}
+
+pub fun put_i64(e: *Emit, v: i64) err[WriteError] {
+    val r: res[usize, WriteError] = format.write_i64(e.w, v);
+    if (sel r.err) { ret err[WriteError].err{writer.advance(r.err, e.total)}; }
+    e.total = e.total + r.ok;
+    ret err[WriteError].ok{};
+}
+
+pub fun put_f64(e: *Emit, v: f64) err[WriteError] {
+    val r: res[usize, WriteError] = format.write_f64(e.w, v);
+    if (sel r.err) { ret err[WriteError].err{writer.advance(r.err, e.total)}; }
+    e.total = e.total + r.ok;
+    ret err[WriteError].ok{};
+}
