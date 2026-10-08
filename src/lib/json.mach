@@ -1,0 +1,5 @@
+# the json library, what a dependent's `use json;` binds
+# JSON (RFC 8259) reading and writing.
+
+# the startup a test dispatcher of this library links
+use std.runtime;
