@@ -1,0 +1,38 @@
+# a counting byte buffer, and the byte comparison the tests share
+
+use std.system.capability;
+use std.types.bool.bool;
+use std.types.bool.false;
+use std.types.size.usize;
+
+# a counting writer over a fixed buffer: copies the bytes that fit and counts
+# every requested byte, so emit() can report the length a full render needs even
+# when the buffer is too small.
+# ---
+# data: destination buffer
+# cap:  buffer capacity
+# pos:  bytes requested so far (the render length; may exceed cap)
+pub rec BufWriter {
+    data: *u8;
+    cap:  usize;
+    pos:  usize;
+}
+
+# append one byte to a BufWriter, counting it whether or not it fits
+pub fun bufw_put(b: *BufWriter, c: u8) {
+    if (b.pos < b.cap) { b.data[b.pos] = c; }
+    b.pos = b.pos + 1;
+}
+
+$if (capability.HOSTED) {
+    # whether buf[0..n) equals the nul-terminated want
+    #[testing]
+    pub fun bytes_are(buf: *u8, n: usize, want: *u8) bool {
+        var i: usize = 0;
+        for (i < n) {
+            if (want[i] == 0 || buf[i] != want[i]) { ret false; }
+            i = i + 1;
+        }
+        ret want[n] == 0;
+    }
+}

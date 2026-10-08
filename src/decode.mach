@@ -1,0 +1,296 @@
+# decoding the escapes of a parsed string into logical bytes
+
+use json.buffer.BufWriter;
+use json.buffer.bufw_put;
+use json.error.JsonError;
+use json.value.Value;
+use std.system.capability;
+use std.text.utf8;
+use std.types.error.err;
+use std.types.result.res;
+use std.types.size.usize;
+
+# decode the raw wire bytes of a string value into logical
+# bytes, resolving JSON escapes into a caller buffer.
+#
+# the inverse of the emit escaper: '\"' '\\' '\/' become '"' '\' '/', '\b' '\f'
+# '\n' '\r' '\t' become their control bytes, and '\uXXXX' decodes to UTF-8 (a
+# high+low surrogate pair combines into one astral code point). unescaped bytes,
+# including raw UTF-8, pass through verbatim. the parser stores raw wire bytes
+# (see value_string), so this is where a parsed string becomes logical text.
+#
+# bytes are written into `buf` up to `len`; the full decoded length is always
+# returned, so a caller can size the buffer by passing len 0 (or a short buffer)
+# and calling again once `buf` is large enough (as with emit).
+# ---
+# v:   the value whose raw string bytes to decode (str_val/str_len)
+# buf: destination buffer for the decoded bytes
+# len: capacity of buf in bytes
+# ret: the decoded byte length on success (may exceed len), or syntax at the
+#      offset of a malformed escape (unknown escape, a '\u' without four hex
+#      digits, or an ill-formed surrogate pair)
+pub fun value_string_decode(v: *Value, buf: *u8, len: usize) res[usize, JsonError] {
+    var b: BufWriter;
+    b.data = buf;
+    b.cap  = len;
+    b.pos  = 0;
+    val dr: err[JsonError] = decode_bytes(?b, v.str_val::*u8, v.str_len);
+    if (sel dr.err) { ret res[usize, JsonError].err{dr.err}; }
+    ret res[usize, JsonError].ok{b.pos};
+}
+
+# decode s[0..slen) -- the raw wire bytes of a JSON string body, escapes intact
+# -- into logical bytes written into b. See value_string_decode for the escape
+# matrix and the malformed-escape contract.
+# ---
+# b:    the counting buffer to decode into
+# s:    the raw string bytes
+# slen: the byte length of s
+# ret:  ok, or syntax at the offset of a malformed escape
+fun decode_bytes(b: *BufWriter, s: *u8, slen: usize) err[JsonError] {
+    var i: usize = 0;
+    for (i < slen) {
+        val ir: res[usize, JsonError] = decode_unit(b, s, i, slen);
+        if (sel ir.err) { ret err[JsonError].err{ir.err}; }
+        i = ir.ok;
+    }
+    ret err[JsonError].ok{};
+}
+
+fun malformed(at: usize) res[usize, JsonError] {
+    ret res[usize, JsonError].err{JsonError.syntax{at}};
+}
+
+# decode one unit of `s` starting at `i` -- a verbatim byte or an escape sequence
+# -- writing the logical bytes into b and returning the next byte index.
+# ---
+# b:    the counting buffer to decode into
+# s:    the raw string bytes
+# i:    the byte index to decode
+# slen: the byte length of s
+# ret:  the index of the next byte, or syntax at the malformed escape
+fun decode_unit(b: *BufWriter, s: *u8, i: usize, slen: usize) res[usize, JsonError] {
+    val c: u8 = s[i];
+    if (c != '\\') {
+        bufw_put(b, c);
+        ret res[usize, JsonError].ok{i + 1};
+    }
+    if (i + 1 >= slen) { ret malformed(i); }
+    val e: u8 = s[i + 1];
+    if (e == '"') {
+        bufw_put(b, '"');
+        ret res[usize, JsonError].ok{i + 2};
+    }
+    if (e == '\\') {
+        bufw_put(b, '\\');
+        ret res[usize, JsonError].ok{i + 2};
+    }
+    if (e == '/') {
+        bufw_put(b, '/');
+        ret res[usize, JsonError].ok{i + 2};
+    }
+    if (e == 'b') {
+        bufw_put(b, 0x08);
+        ret res[usize, JsonError].ok{i + 2};
+    }
+    if (e == 'f') {
+        bufw_put(b, 0x0c);
+        ret res[usize, JsonError].ok{i + 2};
+    }
+    if (e == 'n') {
+        bufw_put(b, 0x0a);
+        ret res[usize, JsonError].ok{i + 2};
+    }
+    if (e == 'r') {
+        bufw_put(b, 0x0d);
+        ret res[usize, JsonError].ok{i + 2};
+    }
+    if (e == 't') {
+        bufw_put(b, 0x09);
+        ret res[usize, JsonError].ok{i + 2};
+    }
+    if (e == 'u') { ret decode_u_escape(b, s, i, slen); }
+    ret malformed(i + 1);
+}
+
+# decode a '\uXXXX' escape at `i` (the backslash) into UTF-8 written into b,
+# combining a high+low surrogate pair into one astral code point. Returns the
+# index past the escape (or the pair), or syntax on truncated/non-hex digits or
+# an ill-formed surrogate pair.
+# ---
+# b:    the counting buffer to decode into
+# s:    the raw string bytes
+# i:    the index of the escape's backslash
+# slen: the byte length of s
+# ret:  the index of the next byte, or syntax at the malformed escape
+fun decode_u_escape(b: *BufWriter, s: *u8, i: usize, slen: usize) res[usize, JsonError] {
+    val hr: res[u32, JsonError] = read_hex4(s, i + 2, slen);
+    if (sel hr.err) { ret res[usize, JsonError].err{hr.err}; }
+    val u: u32 = hr.ok;
+
+    if (u >= 0xD800 && u <= 0xDBFF) {
+        val j: usize = i + 6;
+        if (j + 1 >= slen || s[j] != '\\' || s[j + 1] != 'u') { ret malformed(j); }
+        val lr: res[u32, JsonError] = read_hex4(s, j + 2, slen);
+        if (sel lr.err) { ret res[usize, JsonError].err{lr.err}; }
+        val lo: u32 = lr.ok;
+        if (lo < 0xDC00 || lo > 0xDFFF) { ret malformed(j); }
+        val cp: u32 = 0x10000 + ((u - 0xD800) << 10) + (lo - 0xDC00);
+        write_utf8_bytes(b, cp);
+        ret res[usize, JsonError].ok{j + 6};
+    }
+
+    if (u >= 0xDC00 && u <= 0xDFFF) { ret malformed(i); }
+
+    write_utf8_bytes(b, u);
+    ret res[usize, JsonError].ok{i + 6};
+}
+
+# read the four hex digits of a '\uXXXX' escape starting at `i` (the first digit),
+# returning the 16-bit value.
+# ---
+# s:    the raw string bytes
+# i:    the index of the first hex digit
+# slen: the byte length of s
+# ret:  the decoded 16-bit value, or syntax at the truncation or non-hex digit
+fun read_hex4(s: *u8, i: usize, slen: usize) res[u32, JsonError] {
+    if (i + 4 > slen) { ret res[u32, JsonError].err{JsonError.syntax{slen}}; }
+    var v: u32   = 0;
+    var k: usize = 0;
+    for (k < 4) {
+        val d: u32 = hex_nibble(s[i + k]);
+        if (d > 0xF) { ret res[u32, JsonError].err{JsonError.syntax{i + k}}; }
+        v = (v << 4) | d;
+        k = k + 1;
+    }
+    ret res[u32, JsonError].ok{v};
+}
+
+# map a hex ASCII digit to its 0-15 value, or 0x100 if the byte is not hex
+# ---
+# c:   the candidate hex digit byte
+# ret: the nibble value, or 0x100 for a non-hex byte
+fun hex_nibble(c: u8) u32 {
+    if (c >= '0' && c <= '9') { ret (c - '0')::u32; }
+    if (c >= 'a' && c <= 'f') { ret (c - 'a' + 10)::u32; }
+    if (c >= 'A' && c <= 'F') { ret (c - 'A' + 10)::u32; }
+    ret 0x100;
+}
+
+# encode a validated scalar (never a surrogate, <= U+10FFFF) as UTF-8 bytes
+# written into b.
+# ---
+# b:  the counting buffer to write into
+# cp: the Unicode scalar value
+fun write_utf8_bytes(b: *BufWriter, cp: u32) {
+    var tmp: [4]u8;
+    val n:   usize = utf8.encode(cp::utf8.Codepoint, ?tmp[0], 4);
+    var i:   usize = 0;
+    for (i < n) {
+        bufw_put(b, tmp[i]);
+        i = i + 1;
+    }
+}
+
+$if (capability.HOSTED) {
+    #[testing]
+    use json.value.make_string;
+    use std.types.bool.bool;
+    use std.types.bool.false;
+    use std.types.bool.true;
+    use std.types.string.str;
+
+    # decode a raw string body through value_string_decode and compare the result to
+    # `want`.
+    #[testing]
+    pub fun decode_check(raw: *u8, rawlen: usize, want: *u8, wantlen: usize) bool {
+        val v:   Value                 = make_string((raw::usize)::str, rawlen);
+        var buf: [64]u8;
+        val dr:  res[usize, JsonError] = value_string_decode(?v, ?buf[0], 64);
+        if (sel dr.err) { ret false; }
+        val n: usize = dr.ok;
+        if (n != wantlen) { ret false; }
+        var i: usize = 0;
+        for (i < n) {
+            if (buf[i] != want[i]) { ret false; }
+            i = i + 1;
+        }
+        ret true;
+    }
+
+    # whether value_string_decode rejects the given raw string body
+    #[testing]
+    fun decode_rejects(raw: *u8, rawlen: usize) bool {
+        val v:   Value                 = make_string((raw::usize)::str, rawlen);
+        var buf: [64]u8;
+        val dr:  res[usize, JsonError] = value_string_decode(?v, ?buf[0], 64);
+        ret sel dr.err;
+    }
+
+    # raw bytes pass verbatim, short escapes decode to their bytes, and \u
+    # escapes of either hex case decode to utf-8, a surrogate pair to one
+    # astral code point
+    test value_string_decode__decodes_escapes {
+        var verbatim: [5]u8 = [5]u8{'a', 0xC3, 0xA9, 'z', '!'};
+        if (!decode_check(?verbatim[0], 5, ?verbatim[0], 5)) { ret 1; }
+
+        # \" \\ \/ \b \f \n \r \t
+        var short:      [16]u8 = [16]u8{'\\', '"', '\\', '\\', '\\', '/', '\\', 'b', '\\', 'f', '\\', 'n', '\\', 'r', '\\', 't'};
+        var short_want: [8]u8  = [8]u8{'"', '\\', '/', 0x08, 0x0c, 0x0a, 0x0d, 0x09};
+        if (!decode_check(?short[0], 16, ?short_want[0], 8)) { ret 2; }
+
+        var ascii:      [6]u8 = [6]u8{'\\', 'u', '0', '0', '4', '1'};
+        var ascii_want: [1]u8 = [1]u8{'A'};
+        if (!decode_check(?ascii[0], 6, ?ascii_want[0], 1)) { ret 3; }
+
+        var bmp:      [6]u8 = [6]u8{'\\', 'u', '0', '0', 'E', '9'};
+        var bmp_want: [2]u8 = [2]u8{0xC3, 0xA9};
+        if (!decode_check(?bmp[0], 6, ?bmp_want[0], 2)) { ret 4; }
+
+        var pair:      [12]u8 = [12]u8{'\\', 'u', 'd', '8', '3', 'd', '\\', 'u', 'd', 'e', '0', '0'};
+        var pair_want: [4]u8  = [4]u8{0xF0, 0x9F, 0x98, 0x80};
+        if (!decode_check(?pair[0], 12, ?pair_want[0], 4)) { ret 5; }
+        ret 0;
+    }
+
+    # value_string_decode reports the full decoded length even when the buffer is too
+    # small, so a caller can size then fill (as with emit).
+    test value_string_decode__buffer_sizing {
+        # 😀 decodes to 4 bytes
+        var raw: [12]u8 = [12]u8{'\\', 'u', 'd', '8', '3', 'd', '\\', 'u', 'd', 'e', '0', '0'};
+        val v:   Value  = make_string(((?raw[0])::usize)::str, 12);
+
+        var probe: [1]u8;
+        val sr:    res[usize, JsonError] = value_string_decode(?v, ?probe[0], 0);
+        if (sel sr.err) { ret 1; }
+        if (sr.ok != 4) { ret 1; }
+
+        var buf: [4]u8;
+        val dr:  res[usize, JsonError] = value_string_decode(?v, ?buf[0], 4);
+        if (sel dr.err)                                                           { ret 1; }
+        if (dr.ok != 4)                                                           { ret 1; }
+        if (buf[0] != 0xF0 || buf[1] != 0x9F || buf[2] != 0x98 || buf[3] != 0x80) { ret 1; }
+        ret 0;
+    }
+
+    # unknown, truncated and non-hex escapes, unpaired or mismatched surrogates,
+    # and a trailing backslash are all rejected
+    test value_string_decode__rejects_malformed_escapes {
+        var bad_escape: [2]u8 = [2]u8{'\\', 'x'};
+        if (!decode_rejects(?bad_escape[0], 2)) { ret 1; }
+        var truncated: [4]u8 = [4]u8{'\\', 'u', '1', '2'};
+        if (!decode_rejects(?truncated[0], 4)) { ret 2; }
+        var non_hex: [6]u8 = [6]u8{'\\', 'u', '1', '2', 'g', '4'};
+        if (!decode_rejects(?non_hex[0], 6)) { ret 3; }
+        var lone_high: [6]u8 = [6]u8{'\\', 'u', 'd', '8', '3', 'd'};
+        if (!decode_rejects(?lone_high[0], 6)) { ret 4; }
+        # \ud83d followed by A
+        var bad_pair: [12]u8 = [12]u8{'\\', 'u', 'd', '8', '3', 'd', '\\', 'u', '0', '0', '4', '1'};
+        if (!decode_rejects(?bad_pair[0], 12)) { ret 5; }
+        var lone_low: [6]u8 = [6]u8{'\\', 'u', 'd', 'c', '0', '0'};
+        if (!decode_rejects(?lone_low[0], 6)) { ret 6; }
+        var trailing: [1]u8 = [1]u8{'\\'};
+        if (!decode_rejects(?trailing[0], 1)) { ret 7; }
+        ret 0;
+    }
+}

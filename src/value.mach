@@ -1,0 +1,312 @@
+# the parsed value tree and the accessors over it
+
+use std.allocator;
+use std.types.bool.bool;
+use std.types.bool.false;
+use std.types.bool.true;
+use std.types.error.err;
+use std.types.option.opt;
+use std.types.size.usize;
+use std.types.string.str;
+
+pub def Kind: u8;
+pub val NULL:   Kind = 0;
+pub val BOOL:   Kind = 1;
+pub val NUMBER: Kind = 2;
+pub val STRING: Kind = 3;
+pub val ARRAY:  Kind = 4;
+pub val OBJECT: Kind = 5;
+
+# a parsed JSON value
+# ---
+# kind:      type discriminator (NULL, BOOL, NUMBER, STRING, ARRAY, OBJECT)
+# bool_val:  boolean value (1 = true, 0 = false) when kind == BOOL
+# is_float:  for a NUMBER, 1 if parsed as a float (had a fraction or exponent),
+#            else 0 (an integer); selects num_val vs float_val
+# num_val:   integer value when kind == NUMBER and is_float == 0
+# float_val: float value when kind == NUMBER and is_float == 1
+# str_val:   pointer into original input when kind == STRING; the RAW on-wire
+#            bytes with escapes intact (use value_string_decode for logical bytes)
+# str_len:   byte length of string (not null-terminated)
+# children:  heap-allocated array of child Values (ARRAY or OBJECT)
+# keys:      heap-allocated array of key strings (OBJECT only, parallel with children;
+#            pointers into the original input, not null-terminated)
+# keys_len:  heap-allocated array of key byte lengths (parallel with keys)
+# count:     number of children/keys
+# cap:       allocated capacity of children/keys arrays
+pub rec Value {
+    kind:      Kind;
+    bool_val:  u8;
+    is_float:  u8;
+    num_val:   i64;
+    float_val: f64;
+    str_val:   str;
+    str_len:   usize;
+    children:  *Value;
+    keys:      *str;
+    keys_len:  *usize;
+    count:     usize;
+    cap:       usize;
+}
+
+# release the container storage under a value, leaving the value empty
+#
+# walks arrays and objects to any depth and returns every children, keys and
+# keys_len buffer to the allocator the tree was parsed with. scalars and
+# strings own nothing (a string points into the caller's input). every buffer
+# is released even when one refusal is reported; the first refusal is the
+# outcome. a released value is empty, so a second dnit is a no-op.
+# ---
+# alloc: the allocator the tree was parsed with
+# v:     the value whose storage to release
+# ret:   ok, or the first refusal the allocator reported
+pub fun dnit(alloc: *allocator.Allocator, v: *Value) err[allocator.Error] {
+    var failed: bool = false;
+    var cause:  allocator.Error;
+
+    var i: usize = 0;
+    for (i < v.count) {
+        val child: err[allocator.Error] = dnit(alloc, ?v.children[i]);
+        if (sel child.err) {
+            if (!failed) {
+                failed = true;
+                cause  = child.err;
+            }
+        }
+        i = i + 1;
+    }
+
+    if (v.cap > 0) {
+        val c: err[allocator.Error] = allocator.deallocate[Value](alloc, v.children, v.cap);
+        if (sel c.err) {
+            if (!failed) {
+                failed = true;
+                cause  = c.err;
+            }
+        }
+        if (v.keys != nil) {
+            val k: err[allocator.Error] = allocator.deallocate[str](alloc, v.keys, v.cap);
+            if (sel k.err) {
+                if (!failed) {
+                    failed = true;
+                    cause  = k.err;
+                }
+            }
+            val l: err[allocator.Error] = allocator.deallocate[usize](alloc, v.keys_len, v.cap);
+            if (sel l.err) {
+                if (!failed) {
+                    failed = true;
+                    cause  = l.err;
+                }
+            }
+        }
+    }
+
+    v.children = nil;
+    v.keys     = nil;
+    v.keys_len = nil;
+    v.count    = 0;
+    v.cap      = 0;
+    if (failed) { ret err[allocator.Error].err{cause}; }
+    ret err[allocator.Error].ok{};
+}
+
+# check if a value is null
+pub fun value_is_null(v: *Value) bool {
+    ret v.kind == NULL;
+}
+
+# check if a value is a boolean
+pub fun value_is_bool(v: *Value) bool {
+    ret v.kind == BOOL;
+}
+
+# check if a value is a number
+pub fun value_is_number(v: *Value) bool {
+    ret v.kind == NUMBER;
+}
+
+# check if a value is a string
+pub fun value_is_string(v: *Value) bool {
+    ret v.kind == STRING;
+}
+
+# check if a value is an array
+pub fun value_is_array(v: *Value) bool {
+    ret v.kind == ARRAY;
+}
+
+# check if a value is an object
+pub fun value_is_object(v: *Value) bool {
+    ret v.kind == OBJECT;
+}
+
+# get the boolean value
+# ---
+# ret: true if bool_val is nonzero
+pub fun value_bool(v: *Value) bool {
+    ret v.bool_val != 0;
+}
+
+# whether a NUMBER value was parsed as a float
+#
+# true for a number with a fraction or exponent, false for an integer-looking
+# number; selects whether to read it with value_float or value_number.
+pub fun value_is_float(v: *Value) bool {
+    ret v.kind == NUMBER && v.is_float != 0;
+}
+
+# get the integer value of an integer NUMBER
+#
+# meaningful when the number was parsed as an integer (value_is_float is false);
+# read a float number with value_float.
+pub fun value_number(v: *Value) i64 {
+    ret v.num_val;
+}
+
+# get the value of a NUMBER as a 64-bit float
+#
+# returns the float value for a number parsed as a float, or the integer value
+# widened to f64 for an integer number, so it is defined for any NUMBER.
+pub fun value_float(v: *Value) f64 {
+    if (v.is_float != 0) { ret v.float_val; }
+    ret v.num_val::f64;
+}
+
+# get the raw string pointer and length
+#
+# for a parsed value these are the RAW on-wire bytes between the quotes, escapes
+# intact and zero-copy into the input (parse "a\nb" yields the 4 bytes a \ n b);
+# use value_string_decode to resolve the escapes into logical bytes.
+# ---
+# len: receives the byte length of the string
+# ret: pointer to the first byte of the raw string content
+pub fun value_string(v: *Value, len: *usize) *u8 {
+    @len = v.str_len;
+    ret v.str_val::*u8;
+}
+
+# get the number of children (array elements or object entries)
+pub fun value_count(v: *Value) usize {
+    ret v.count;
+}
+
+# get an array element or object value by index
+#
+# the pointer borrows the tree and expires with dnit.
+# ---
+# index: zero-based index
+# ret:   the child Value, or none past the last child
+pub fun value_get(v: *Value, index: usize) opt[*Value] {
+    if (index >= v.count) { ret opt[*Value].none{}; }
+    ret opt[*Value].some{?v.children[index]};
+}
+
+# get an object key by index
+#
+# the key points into the original input and is NOT null-terminated;
+# its byte length comes from value_key_len.
+# ---
+# index: zero-based index
+# ret:   the key, or none past the last entry or when v is not an object
+pub fun value_key(v: *Value, index: usize) opt[str] {
+    if (v.kind != OBJECT || index >= v.count) { ret opt[str].none{}; }
+    ret opt[str].some{v.keys[index]};
+}
+
+# get the byte length of an object key by index
+# ---
+# index: zero-based index
+# ret:   key length in bytes, or 0 if out of bounds
+pub fun value_key_len(v: *Value, index: usize) usize {
+    if (v.kind != OBJECT || index >= v.count) { ret 0; }
+    ret v.keys_len[index];
+}
+
+# length-bounded comparison of a stored key slice against a
+# null-terminated needle.
+fun key_equals(k: str, klen: usize, key: str) bool {
+    var i: usize = 0;
+    for (i < klen) {
+        if (key[i] == 0 || k[i] != key[i]) { ret false; }
+        i = i + 1;
+    }
+    ret key[klen] == 0;
+}
+
+# find an object value by key name (linear search)
+#
+# the pointer borrows the tree and expires with dnit.
+# ---
+# key: null-terminated key to search for
+# ret: the Value, or none when no entry has that key or v is not an object
+pub fun value_find(v: *Value, key: str) opt[*Value] {
+    if (v.kind != OBJECT || key == nil) { ret opt[*Value].none{}; }
+    var i: usize = 0;
+    for (i < v.count) {
+        if (key_equals(v.keys[i], v.keys_len[i], key)) {
+            ret opt[*Value].some{?v.children[i]};
+        }
+        i = i + 1;
+    }
+    ret opt[*Value].none{};
+}
+
+pub fun make_null() Value {
+    var v: Value;
+    v.kind      = NULL;
+    v.bool_val  = 0;
+    v.is_float  = 0;
+    v.num_val   = 0;
+    v.float_val = 0.0;
+    v.str_val   = nil;
+    v.str_len   = 0;
+    v.children  = nil;
+    v.keys      = nil;
+    v.keys_len  = nil;
+    v.count     = 0;
+    v.cap       = 0;
+    ret v;
+}
+
+pub fun make_bool(b: u8) Value {
+    var v: Value = make_null();
+    v.kind     = BOOL;
+    v.bool_val = b;
+    ret v;
+}
+
+pub fun make_number(n: i64) Value {
+    var v: Value = make_null();
+    v.kind    = NUMBER;
+    v.num_val = n;
+    ret v;
+}
+
+pub fun make_float(f: f64) Value {
+    var v: Value = make_null();
+    v.kind      = NUMBER;
+    v.is_float  = 1;
+    v.float_val = f;
+    ret v;
+}
+
+pub fun make_string(s: str, slen: usize) Value {
+    var v: Value = make_null();
+    v.kind    = STRING;
+    v.str_val = s;
+    v.str_len = slen;
+    ret v;
+}
+
+pub fun make_array() Value {
+    var v: Value = make_null();
+    v.kind = ARRAY;
+    ret v;
+}
+
+pub fun make_object() Value {
+    var v: Value = make_null();
+    v.kind = OBJECT;
+    ret v;
+}

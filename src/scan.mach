@@ -1,0 +1,159 @@
+# the parser's cursor and the readers of its scalar tokens
+
+use json.error.JsonError;
+use json.value.Value;
+use json.value.make_bool;
+use json.value.make_float;
+use json.value.make_null;
+use json.value.make_number;
+use json.value.make_string;
+use std.allocator;
+use std.text.parse.ParseError;
+use std.text.parse.parse_f64_len;
+use std.types.bool.bool;
+use std.types.bool.false;
+use std.types.bool.true;
+use std.types.result.res;
+use std.types.size.usize;
+use std.types.string.str;
+
+pub rec Parser {
+    src:   *u8;
+    len:   usize;
+    pos:   usize;
+    alloc: *allocator.Allocator;
+}
+
+pub fun skip_ws(p: *Parser) {
+    for (p.pos < p.len) {
+        val c: u8 = p.src[p.pos];
+        if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+            p.pos = p.pos + 1;
+        }
+        or {
+            ret;
+        }
+    }
+}
+
+pub fun syntax_at(pos: usize) res[Value, JsonError] {
+    ret res[Value, JsonError].err{JsonError.syntax{pos}};
+}
+
+pub fun parse_null(p: *Parser) res[Value, JsonError] {
+    if (p.pos + 4 > p.len) { ret syntax_at(p.len); }
+    if (p.src[p.pos] != 'n' || p.src[p.pos + 1] != 'u' || p.src[p.pos + 2] != 'l' || p.src[p.pos + 3] != 'l') {
+        ret syntax_at(p.pos);
+    }
+    p.pos = p.pos + 4;
+    ret res[Value, JsonError].ok{make_null()};
+}
+
+pub fun parse_bool(p: *Parser) res[Value, JsonError] {
+    if (p.src[p.pos] == 't') {
+        if (p.pos + 4 > p.len) { ret syntax_at(p.len); }
+        if (p.src[p.pos + 1] != 'r' || p.src[p.pos + 2] != 'u' || p.src[p.pos + 3] != 'e') {
+            ret syntax_at(p.pos);
+        }
+        p.pos = p.pos + 4;
+        ret res[Value, JsonError].ok{make_bool(1)};
+    }
+
+    if (p.pos + 5 > p.len) { ret syntax_at(p.len); }
+    if (p.src[p.pos + 1] != 'a' || p.src[p.pos + 2] != 'l' || p.src[p.pos + 3] != 's' || p.src[p.pos + 4] != 'e') {
+        ret syntax_at(p.pos);
+    }
+    p.pos = p.pos + 5;
+    ret res[Value, JsonError].ok{make_bool(0)};
+}
+
+# parse a JSON number (RFC 8259): optional minus, integer part, optional fraction
+# and optional exponent. a number with a fraction or exponent yields a float
+# value (parsed with correct rounding via parse_f64_len over the zero-copy span);
+# an integer-looking number keeps yielding an i64, unchanged.
+pub fun parse_number(p: *Parser) res[Value, JsonError] {
+    val start:    usize = p.pos;
+    var neg:      bool  = false;
+    var is_float: bool  = false;
+
+    if (p.src[p.pos] == '-') {
+        neg   = true;
+        p.pos = p.pos + 1;
+        if (p.pos >= p.len || p.src[p.pos] < '0' || p.src[p.pos] > '9') {
+            ret syntax_at(p.pos);
+        }
+    }
+
+    var n:         i64  = 0;
+    var has_digit: bool = false;
+    for (p.pos < p.len && p.src[p.pos] >= '0' && p.src[p.pos] <= '9') {
+        n         = n * 10 + (p.src[p.pos] - '0')::i64;
+        has_digit = true;
+        p.pos     = p.pos + 1;
+    }
+
+    if (!has_digit) { ret syntax_at(p.pos); }
+
+    if (p.pos < p.len && p.src[p.pos] == '.') {
+        is_float = true;
+        p.pos    = p.pos + 1;
+        var frac_digit: bool = false;
+        for (p.pos < p.len && p.src[p.pos] >= '0' && p.src[p.pos] <= '9') {
+            frac_digit = true;
+            p.pos      = p.pos + 1;
+        }
+        if (!frac_digit) { ret syntax_at(p.pos); }
+    }
+
+    if (p.pos < p.len && (p.src[p.pos] == 'e' || p.src[p.pos] == 'E')) {
+        is_float = true;
+        p.pos    = p.pos + 1;
+        if (p.pos < p.len && (p.src[p.pos] == '+' || p.src[p.pos] == '-')) {
+            p.pos = p.pos + 1;
+        }
+        var exp_digit: bool = false;
+        for (p.pos < p.len && p.src[p.pos] >= '0' && p.src[p.pos] <= '9') {
+            exp_digit = true;
+            p.pos     = p.pos + 1;
+        }
+        if (!exp_digit) { ret syntax_at(p.pos); }
+    }
+
+    if (is_float) {
+        val span: str                  = (p.src::usize + start)::str;
+        val fr:   res[f64, ParseError] = parse_f64_len(span, p.pos - start);
+        if (sel fr.err) {
+            # the grammar above admits only what parse_f64_len accepts, so a
+            # refusal here names the span it could not read
+            ret syntax_at(start);
+        }
+        ret res[Value, JsonError].ok{make_float(fr.ok)};
+    }
+
+    if (neg) { n = 0 - n; }
+
+    ret res[Value, JsonError].ok{make_number(n)};
+}
+
+pub fun parse_string(p: *Parser) res[Value, JsonError] {
+    p.pos = p.pos + 1;
+    val start: usize = p.pos;
+
+    for (p.pos < p.len) {
+        val c: u8 = p.src[p.pos];
+        if (c == '\\') {
+            if (p.pos + 1 >= p.len) { ret syntax_at(p.pos); }
+            p.pos = p.pos + 2;
+            cnt;
+        }
+        if (c == '"') {
+            val slen: usize = p.pos - start;
+            val sptr: str   = (p.src::usize + start)::str;
+            p.pos = p.pos + 1;
+            ret res[Value, JsonError].ok{make_string(sptr, slen)};
+        }
+        p.pos = p.pos + 1;
+    }
+
+    ret syntax_at(p.len);
+}
