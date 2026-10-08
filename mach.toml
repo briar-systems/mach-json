@@ -34,6 +34,7 @@ abi = "aapcs64"
 [artifact.json]
 kind = "static"
 default = true
+export = true
 entry = "lib/json.mach"
 out = "{project.work}/lib/json"
 targets = ["*"]
