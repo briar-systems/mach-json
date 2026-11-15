@@ -320,7 +320,7 @@ $if (capability.HOSTED) {
         len: usize;
     }
 
-    # writer callback appending to a TestSink, dropping bytes past its capacity
+    # writer callback appending to a Sink, dropping bytes past its capacity
     #[testing]
     fun sink_write(ctx: ptr, buf: *u8, len: usize) res[usize, WriteError] {
         val s: *Sink = ctx::*Sink;
@@ -339,7 +339,7 @@ $if (capability.HOSTED) {
         ret bytes_are(s.buf, s.len, want);
     }
 
-    # wire a Writer over a TestSink backed by `buf`
+    # wire a Writer over a Sink backed by `buf`
     #[testing]
     fun sink_writer(w: *writer.Writer, s: *Sink, buf: *u8, cap: usize) {
         s.buf     = buf;
