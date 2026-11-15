@@ -66,37 +66,37 @@ pub fun dnit(alloc: *allocator.Allocator, v: *Value) err[allocator.Error] {
 
     var i: usize = 0;
     for (i < v.count) {
-        val child: err[allocator.Error] = dnit(alloc, ?v.children[i]);
-        if (sel child.err) {
+        val err_child: err[allocator.Error] = dnit(alloc, ?v.children[i]);
+        if (sel err_child.err) {
             if (!failed) {
                 failed = true;
-                cause  = child.err;
+                cause  = err_child.err;
             }
         }
         i = i + 1;
     }
 
     if (v.cap > 0) {
-        val c: err[allocator.Error] = allocator.deallocate[Value](alloc, v.children, v.cap);
-        if (sel c.err) {
+        val err_deallocate: err[allocator.Error] = allocator.deallocate[Value](alloc, v.children, v.cap);
+        if (sel err_deallocate.err) {
             if (!failed) {
                 failed = true;
-                cause  = c.err;
+                cause  = err_deallocate.err;
             }
         }
         if (v.keys != nil) {
-            val k: err[allocator.Error] = allocator.deallocate[str](alloc, v.keys, v.cap);
-            if (sel k.err) {
+            val err_deallocate: err[allocator.Error] = allocator.deallocate[str](alloc, v.keys, v.cap);
+            if (sel err_deallocate.err) {
                 if (!failed) {
                     failed = true;
-                    cause  = k.err;
+                    cause  = err_deallocate.err;
                 }
             }
-            val l: err[allocator.Error] = allocator.deallocate[usize](alloc, v.keys_len, v.cap);
-            if (sel l.err) {
+            val err_deallocate_alloc: err[allocator.Error] = allocator.deallocate[usize](alloc, v.keys_len, v.cap);
+            if (sel err_deallocate_alloc.err) {
                 if (!failed) {
                     failed = true;
-                    cause  = l.err;
+                    cause  = err_deallocate_alloc.err;
                 }
             }
         }

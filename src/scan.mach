@@ -120,14 +120,14 @@ pub fun parse_number(p: *Parser) res[Value, JsonError] {
     }
 
     if (is_float) {
-        val span: str                  = (p.src::usize + start)::str;
-        val fr:   res[f64, ParseError] = parse_f64_len(span, p.pos - start);
-        if (sel fr.err) {
+        val span:              str                  = (p.src::usize + start)::str;
+        val res_parse_f64_len: res[f64, ParseError] = parse_f64_len(span, p.pos - start);
+        if (sel res_parse_f64_len.err) {
             # the grammar above admits only what parse_f64_len accepts, so a
             # refusal here names the span it could not read
             ret syntax_at(start);
         }
-        ret res[Value, JsonError].ok{make_float(fr.ok)};
+        ret res[Value, JsonError].ok{make_float(res_parse_f64_len.ok)};
     }
 
     if (neg) { n = 0 - n; }

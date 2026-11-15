@@ -85,9 +85,9 @@ pub fun object_end_value(o: *Object) err[WriteError] {
 # child: the nested object state to initialise
 # ret:   ok, or the writer's failure with the persisted prefix
 pub fun field_object_begin(o: *Object, key: *u8, child: *Object) err[WriteError] {
-    var e:    Emit            = Emit{w: o.w, total: 0};
-    val lead: err[WriteError] = member(?e, o, key);
-    if (sel lead.err) { ret lead; }
+    var e:        Emit            = Emit{w: o.w, total: 0};
+    val err_lead: err[WriteError] = member(?e, o, key);
+    if (sel err_lead.err) { ret err_lead; }
     child.w     = o.w;
     child.first = true;
     ret put_byte(?e, '{');
@@ -101,9 +101,9 @@ pub fun field_object_begin(o: *Object, key: *u8, child: *Object) err[WriteError]
 # arr: the array state to initialise
 # ret: ok, or the writer's failure with the persisted prefix
 pub fun field_array_begin(o: *Object, key: *u8, arr: *Array) err[WriteError] {
-    var e:    Emit            = Emit{w: o.w, total: 0};
-    val lead: err[WriteError] = member(?e, o, key);
-    if (sel lead.err) { ret lead; }
+    var e:        Emit            = Emit{w: o.w, total: 0};
+    val err_lead: err[WriteError] = member(?e, o, key);
+    if (sel err_lead.err) { ret err_lead; }
     arr.w     = o.w;
     arr.first = true;
     ret put_byte(?e, '[');
@@ -129,8 +129,8 @@ pub fun array_end(arr: *Array) err[WriteError] {
 pub fun array_object_begin(arr: *Array, child: *Object) err[WriteError] {
     var e: Emit = Emit{w: arr.w, total: 0};
     if (!arr.first) {
-        val sep: err[WriteError] = put_byte(?e, ',');
-        if (sel sep.err) { ret sep; }
+        val err_sep: err[WriteError] = put_byte(?e, ',');
+        if (sel err_sep.err) { ret err_sep; }
     }
     arr.first   = false;
     child.w     = arr.w;
@@ -145,9 +145,9 @@ pub fun array_object_begin(arr: *Array, child: *Object) err[WriteError] {
 # v:   the null-terminated value, escaped; nil emits an empty string
 # ret: ok, or the writer's failure with the persisted prefix
 pub fun field_str(o: *Object, key: *u8, v: *u8) err[WriteError] {
-    var e:    Emit            = Emit{w: o.w, total: 0};
-    val lead: err[WriteError] = member(?e, o, key);
-    if (sel lead.err) { ret lead; }
+    var e:        Emit            = Emit{w: o.w, total: 0};
+    val err_lead: err[WriteError] = member(?e, o, key);
+    if (sel err_lead.err) { ret err_lead; }
     ret json_string(?e, v);
 }
 
@@ -159,10 +159,10 @@ pub fun field_str(o: *Object, key: *u8, v: *u8) err[WriteError] {
 # v:   the null-terminated value, or nil for a JSON null
 # ret: ok, or the writer's failure with the persisted prefix
 pub fun field_str_or_null(o: *Object, key: *u8, v: *u8) err[WriteError] {
-    var e:    Emit            = Emit{w: o.w, total: 0};
-    val lead: err[WriteError] = member(?e, o, key);
-    if (sel lead.err) { ret lead; }
-    if (v == nil)     { ret put_str(?e, "null"); }
+    var e:        Emit            = Emit{w: o.w, total: 0};
+    val err_lead: err[WriteError] = member(?e, o, key);
+    if (sel err_lead.err) { ret err_lead; }
+    if (v == nil)         { ret put_str(?e, "null"); }
     ret json_string(?e, v);
 }
 
@@ -172,9 +172,9 @@ pub fun field_str_or_null(o: *Object, key: *u8, v: *u8) err[WriteError] {
 # key: the member key
 # ret: ok, or the writer's failure with the persisted prefix
 pub fun field_null(o: *Object, key: *u8) err[WriteError] {
-    var e:    Emit            = Emit{w: o.w, total: 0};
-    val lead: err[WriteError] = member(?e, o, key);
-    if (sel lead.err) { ret lead; }
+    var e:        Emit            = Emit{w: o.w, total: 0};
+    val err_lead: err[WriteError] = member(?e, o, key);
+    if (sel err_lead.err) { ret err_lead; }
     ret put_str(?e, "null");
 }
 
@@ -185,9 +185,9 @@ pub fun field_null(o: *Object, key: *u8) err[WriteError] {
 # v:   the integer value
 # ret: ok, or the writer's failure with the persisted prefix
 pub fun field_i64(o: *Object, key: *u8, v: i64) err[WriteError] {
-    var e:    Emit            = Emit{w: o.w, total: 0};
-    val lead: err[WriteError] = member(?e, o, key);
-    if (sel lead.err) { ret lead; }
+    var e:        Emit            = Emit{w: o.w, total: 0};
+    val err_lead: err[WriteError] = member(?e, o, key);
+    if (sel err_lead.err) { ret err_lead; }
     ret put_i64(?e, v);
 }
 
@@ -203,9 +203,9 @@ pub fun field_i64(o: *Object, key: *u8, v: i64) err[WriteError] {
 # v:   the float value
 # ret: ok, or the writer's failure with the persisted prefix
 pub fun field_f64(o: *Object, key: *u8, v: f64) err[WriteError] {
-    var e:    Emit            = Emit{w: o.w, total: 0};
-    val lead: err[WriteError] = member(?e, o, key);
-    if (sel lead.err) { ret lead; }
+    var e:        Emit            = Emit{w: o.w, total: 0};
+    val err_lead: err[WriteError] = member(?e, o, key);
+    if (sel err_lead.err) { ret err_lead; }
     ret put_f64(?e, v);
 }
 
@@ -216,10 +216,10 @@ pub fun field_f64(o: *Object, key: *u8, v: f64) err[WriteError] {
 # v:   the boolean value
 # ret: ok, or the writer's failure with the persisted prefix
 pub fun field_bool(o: *Object, key: *u8, v: bool) err[WriteError] {
-    var e:    Emit            = Emit{w: o.w, total: 0};
-    val lead: err[WriteError] = member(?e, o, key);
-    if (sel lead.err) { ret lead; }
-    if (v)            { ret put_str(?e, "true"); }
+    var e:        Emit            = Emit{w: o.w, total: 0};
+    val err_lead: err[WriteError] = member(?e, o, key);
+    if (sel err_lead.err) { ret err_lead; }
+    if (v)                { ret put_str(?e, "true"); }
     ret put_str(?e, "false");
 }
 
@@ -250,14 +250,14 @@ pub fun write_json_string(w: *writer.Writer, s: *u8) err[WriteError] {
 }
 
 fun json_string(e: *Emit, s: *u8) err[WriteError] {
-    val open: err[WriteError] = put_byte(e, '"');
-    if (sel open.err) { ret open; }
+    val err_open: err[WriteError] = put_byte(e, '"');
+    if (sel err_open.err) { ret err_open; }
     if (s != nil) {
         var i: usize = 0;
         for (s[i] != 0) {
-            val r: res[usize, WriteError] = escape_unit(e, ESCAPE_ENSURE_ASCII, s, i);
-            if (sel r.err) { ret err[WriteError].err{r.err}; }
-            i = r.ok;
+            val res_escape_unit: res[usize, WriteError] = escape_unit(e, ESCAPE_ENSURE_ASCII, s, i);
+            if (sel res_escape_unit.err) { ret err[WriteError].err{res_escape_unit.err}; }
+            i = res_escape_unit.ok;
         }
     }
     ret put_byte(e, '"');
@@ -270,14 +270,14 @@ fun json_string(e: *Emit, s: *u8) err[WriteError] {
 # key: the member key (ASCII, emitted verbatim)
 fun member(e: *Emit, o: *Object, key: *u8) err[WriteError] {
     if (!o.first) {
-        val sep: err[WriteError] = put_byte(e, ',');
-        if (sel sep.err) { ret sep; }
+        val err_sep: err[WriteError] = put_byte(e, ',');
+        if (sel err_sep.err) { ret err_sep; }
     }
     o.first = false;
-    val q1: err[WriteError] = put_byte(e, '"');
-    if (sel q1.err) { ret q1; }
-    val k: err[WriteError] = put_str(e, key::str);
-    if (sel k.err) { ret k; }
+    val err_put_byte: err[WriteError] = put_byte(e, '"');
+    if (sel err_put_byte.err) { ret err_put_byte; }
+    val err_put_str: err[WriteError] = put_str(e, key::str);
+    if (sel err_put_str.err) { ret err_put_str; }
     ret put_str(e, "\":");
 }
 
@@ -453,9 +453,9 @@ $if (capability.HOSTED) {
 
         var a: allocator.Allocator;
         page.make(?a);
-        val r: res[Value, JsonError] = parse(sink.buf, sink.len, ?a);
-        if (sel r.err) { ret false; }
-        val pv: Value = r.ok;
+        val res_parse: res[Value, JsonError] = parse(sink.buf, sink.len, ?a);
+        if (sel res_parse.err) { ret false; }
+        val pv: Value = res_parse.ok;
         if (pv.kind != NUMBER) { ret false; }
         var got: f64 = 0.0;
         if (value_is_float(?pv)) { got = value_float(?pv); }
@@ -510,18 +510,18 @@ $if (capability.HOSTED) {
         w.ctx     = (?s)::ptr;
         w.f_write = fail_sink_write;
 
-        var o:     Object;
-        val began: err[WriteError] = object_begin(?w, ?o);
-        if (sel began.err) { ret 1; }
-        val first: err[WriteError] = field_i64(?o, "n", 7);
-        if (sel first.err) { ret 2; }
+        var o:         Object;
+        val err_began: err[WriteError] = object_begin(?w, ?o);
+        if (sel err_began.err) { ret 1; }
+        val err_first: err[WriteError] = field_i64(?o, "n", 7);
+        if (sel err_first.err) { ret 2; }
         # `{"n":7` is 6 bytes; `,"s":"a\"b"` needs 11 and the sink takes 6 more
-        val second: err[WriteError] = field_str(?o, "s", "a\"b");
-        if (!sel second.err)                   { ret 3; }
-        if (!sel second.err.native)            { ret 4; }
-        if (writer.persisted(second.err) != 6) { ret 5; }
-        if (s.len != 12)                       { ret 6; }
-        if (out[6] != ',' || out[11] != '"')   { ret 7; }
+        val err_second: err[WriteError] = field_str(?o, "s", "a\"b");
+        if (!sel err_second.err)                   { ret 3; }
+        if (!sel err_second.err.native)            { ret 4; }
+        if (writer.persisted(err_second.err) != 6) { ret 5; }
+        if (s.len != 12)                           { ret 6; }
+        if (out[6] != ',' || out[11] != '"')       { ret 7; }
 
         # a tree emission through write_value reports the same way
         s.len = 0;
@@ -532,9 +532,9 @@ $if (capability.HOSTED) {
         items[1]     = make_number(34);
         arr.children = ?items[0];
         arr.count    = 2;
-        val tree: err[WriteError] = write_value(?w, ?arr);
-        if (!sel tree.err)                                   { ret 8; }
-        if (writer.persisted(tree.err) != 3)                 { ret 9; }
+        val err_tree: err[WriteError] = write_value(?w, ?arr);
+        if (!sel err_tree.err)                               { ret 8; }
+        if (writer.persisted(err_tree.err) != 3)             { ret 9; }
         if (out[0] != '[' || out[1] != '1' || out[2] != '2') { ret 10; }
         ret 0;
     }

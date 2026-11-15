@@ -34,8 +34,8 @@ pub fun value_string_decode(v: *Value, buf: *u8, len: usize) res[usize, JsonErro
     b.data = buf;
     b.cap  = len;
     b.pos  = 0;
-    val dr: err[JsonError] = decode_bytes(?b, v.str_val::*u8, v.str_len);
-    if (sel dr.err) { ret res[usize, JsonError].err{dr.err}; }
+    val err_decode_bytes: err[JsonError] = decode_bytes(?b, v.str_val::*u8, v.str_len);
+    if (sel err_decode_bytes.err) { ret res[usize, JsonError].err{err_decode_bytes.err}; }
     ret res[usize, JsonError].ok{b.pos};
 }
 
@@ -50,9 +50,9 @@ pub fun value_string_decode(v: *Value, buf: *u8, len: usize) res[usize, JsonErro
 fun decode_bytes(b: *BufWriter, s: *u8, slen: usize) err[JsonError] {
     var i: usize = 0;
     for (i < slen) {
-        val ir: res[usize, JsonError] = decode_unit(b, s, i, slen);
-        if (sel ir.err) { ret err[JsonError].err{ir.err}; }
-        i = ir.ok;
+        val res_decode_unit: res[usize, JsonError] = decode_unit(b, s, i, slen);
+        if (sel res_decode_unit.err) { ret err[JsonError].err{res_decode_unit.err}; }
+        i = res_decode_unit.ok;
     }
     ret err[JsonError].ok{};
 }
@@ -124,16 +124,16 @@ fun decode_unit(b: *BufWriter, s: *u8, i: usize, slen: usize) res[usize, JsonErr
 # slen: the byte length of s
 # ret:  the index of the next byte, or syntax at the malformed escape
 fun decode_u_escape(b: *BufWriter, s: *u8, i: usize, slen: usize) res[usize, JsonError] {
-    val hr: res[u32, JsonError] = read_hex4(s, i + 2, slen);
-    if (sel hr.err) { ret res[usize, JsonError].err{hr.err}; }
-    val u: u32 = hr.ok;
+    val res_read_hex4: res[u32, JsonError] = read_hex4(s, i + 2, slen);
+    if (sel res_read_hex4.err) { ret res[usize, JsonError].err{res_read_hex4.err}; }
+    val u: u32 = res_read_hex4.ok;
 
     if (u >= 0xD800 && u <= 0xDBFF) {
         val j: usize = i + 6;
         if (j + 1 >= slen || s[j] != '\\' || s[j + 1] != 'u') { ret malformed(j); }
-        val lr: res[u32, JsonError] = read_hex4(s, j + 2, slen);
-        if (sel lr.err) { ret res[usize, JsonError].err{lr.err}; }
-        val lo: u32 = lr.ok;
+        val res_read_hex4: res[u32, JsonError] = read_hex4(s, j + 2, slen);
+        if (sel res_read_hex4.err) { ret res[usize, JsonError].err{res_read_hex4.err}; }
+        val lo: u32 = res_read_hex4.ok;
         if (lo < 0xDC00 || lo > 0xDFFF) { ret malformed(j); }
         val cp: u32 = 0x10000 + ((u - 0xD800) << 10) + (lo - 0xDC00);
         write_utf8_bytes(b, cp);
@@ -204,11 +204,11 @@ $if (capability.HOSTED) {
     # `want`.
     #[testing]
     pub fun decode_check(raw: *u8, rawlen: usize, want: *u8, wantlen: usize) bool {
-        val v:   Value                 = make_string((raw::usize)::str, rawlen);
-        var buf: [64]u8;
-        val dr:  res[usize, JsonError] = value_string_decode(?v, ?buf[0], 64);
-        if (sel dr.err) { ret false; }
-        val n: usize = dr.ok;
+        val v:                       Value                 = make_string((raw::usize)::str, rawlen);
+        var buf:                     [64]u8;
+        val res_value_string_decode: res[usize, JsonError] = value_string_decode(?v, ?buf[0], 64);
+        if (sel res_value_string_decode.err) { ret false; }
+        val n: usize = res_value_string_decode.ok;
         if (n != wantlen) { ret false; }
         var i: usize = 0;
         for (i < n) {
@@ -221,10 +221,10 @@ $if (capability.HOSTED) {
     # whether value_string_decode rejects the given raw string body
     #[testing]
     fun decode_rejects(raw: *u8, rawlen: usize) bool {
-        val v:   Value                 = make_string((raw::usize)::str, rawlen);
-        var buf: [64]u8;
-        val dr:  res[usize, JsonError] = value_string_decode(?v, ?buf[0], 64);
-        ret sel dr.err;
+        val v:                       Value                 = make_string((raw::usize)::str, rawlen);
+        var buf:                     [64]u8;
+        val res_value_string_decode: res[usize, JsonError] = value_string_decode(?v, ?buf[0], 64);
+        ret sel res_value_string_decode.err;
     }
 
     # raw bytes pass verbatim, short escapes decode to their bytes, and \u
@@ -260,15 +260,15 @@ $if (capability.HOSTED) {
         var raw: [12]u8 = [12]u8{'\\', 'u', 'd', '8', '3', 'd', '\\', 'u', 'd', 'e', '0', '0'};
         val v:   Value  = make_string(((?raw[0])::usize)::str, 12);
 
-        var probe: [1]u8;
-        val sr:    res[usize, JsonError] = value_string_decode(?v, ?probe[0], 0);
-        if (sel sr.err) { ret 1; }
-        if (sr.ok != 4) { ret 1; }
+        var probe:                   [1]u8;
+        val res_value_string_decode: res[usize, JsonError] = value_string_decode(?v, ?probe[0], 0);
+        if (sel res_value_string_decode.err) { ret 1; }
+        if (res_value_string_decode.ok != 4) { ret 1; }
 
-        var buf: [4]u8;
-        val dr:  res[usize, JsonError] = value_string_decode(?v, ?buf[0], 4);
-        if (sel dr.err)                                                           { ret 1; }
-        if (dr.ok != 4)                                                           { ret 1; }
+        var buf:                         [4]u8;
+        val res_value_string_decode_buf: res[usize, JsonError] = value_string_decode(?v, ?buf[0], 4);
+        if (sel res_value_string_decode_buf.err)                                  { ret 1; }
+        if (res_value_string_decode_buf.ok != 4)                                  { ret 1; }
         if (buf[0] != 0xF0 || buf[1] != 0x9F || buf[2] != 0x98 || buf[3] != 0x80) { ret 1; }
         ret 0;
     }

@@ -20,16 +20,16 @@ pub rec Emit {
 
 # write bytes, adding to the running total or rebasing the failure onto it
 pub fun put(e: *Emit, buf: *u8, len: usize) err[WriteError] {
-    val r: res[usize, WriteError] = format.write_bytes(e.w, buf, len);
-    if (sel r.err) { ret err[WriteError].err{writer.advance(r.err, e.total)}; }
-    e.total = e.total + r.ok;
+    val res_write_bytes: res[usize, WriteError] = format.write_bytes(e.w, buf, len);
+    if (sel res_write_bytes.err) { ret err[WriteError].err{writer.advance(res_write_bytes.err, e.total)}; }
+    e.total = e.total + res_write_bytes.ok;
     ret err[WriteError].ok{};
 }
 
 pub fun put_str(e: *Emit, s: str) err[WriteError] {
-    val r: res[usize, WriteError] = format.write_str(e.w, s);
-    if (sel r.err) { ret err[WriteError].err{writer.advance(r.err, e.total)}; }
-    e.total = e.total + r.ok;
+    val res_write_str: res[usize, WriteError] = format.write_str(e.w, s);
+    if (sel res_write_str.err) { ret err[WriteError].err{writer.advance(res_write_str.err, e.total)}; }
+    e.total = e.total + res_write_str.ok;
     ret err[WriteError].ok{};
 }
 
@@ -39,15 +39,15 @@ pub fun put_byte(e: *Emit, c: u8) err[WriteError] {
 }
 
 pub fun put_i64(e: *Emit, v: i64) err[WriteError] {
-    val r: res[usize, WriteError] = format.write_i64(e.w, v);
-    if (sel r.err) { ret err[WriteError].err{writer.advance(r.err, e.total)}; }
-    e.total = e.total + r.ok;
+    val res_write_i64: res[usize, WriteError] = format.write_i64(e.w, v);
+    if (sel res_write_i64.err) { ret err[WriteError].err{writer.advance(res_write_i64.err, e.total)}; }
+    e.total = e.total + res_write_i64.ok;
     ret err[WriteError].ok{};
 }
 
 pub fun put_f64(e: *Emit, v: f64) err[WriteError] {
-    val r: res[usize, WriteError] = format.write_f64(e.w, v);
-    if (sel r.err) { ret err[WriteError].err{writer.advance(r.err, e.total)}; }
-    e.total = e.total + r.ok;
+    val res_write_f64: res[usize, WriteError] = format.write_f64(e.w, v);
+    if (sel res_write_f64.err) { ret err[WriteError].err{writer.advance(res_write_f64.err, e.total)}; }
+    e.total = e.total + res_write_f64.ok;
     ret err[WriteError].ok{};
 }

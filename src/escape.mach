@@ -37,21 +37,21 @@ pub val ESCAPE_ENSURE_ASCII: EscapePolicy = 1;
 # i:      the byte index to escape
 # ret:    the index of the next byte to process, or the writer's failure
 pub fun escape_unit(e: *Emit, policy: EscapePolicy, s: *u8, i: usize) res[usize, WriteError] {
-    val c:    u8    = s[i];
-    var wr:   err[WriteError];
-    var next: usize = i + 1;
-    if (c == '"')                  { wr = put_str(e, "\\\""); }
-    or (c == '\\')                 { wr = put_str(e, "\\\\"); }
-    or (c == 0x08)                 { wr = put_str(e, "\\b"); }
-    or (c == 0x09)                 { wr = put_str(e, "\\t"); }
-    or (c == 0x0a)                 { wr = put_str(e, "\\n"); }
-    or (c == 0x0c)                 { wr = put_str(e, "\\f"); }
-    or (c == 0x0d)                 { wr = put_str(e, "\\r"); }
-    or (c < 0x20)                  { wr = write_u_hex(e, c::u32); }
-    or (c < 0x80)                  { wr = put_byte(e, c); }
-    or (policy == ESCAPE_VERBATIM) { wr = put_byte(e, c); }
+    val c:           u8    = s[i];
+    var err_put_str: err[WriteError];
+    var next:        usize = i + 1;
+    if (c == '"')                  { err_put_str = put_str(e, "\\\""); }
+    or (c == '\\')                 { err_put_str = put_str(e, "\\\\"); }
+    or (c == 0x08)                 { err_put_str = put_str(e, "\\b"); }
+    or (c == 0x09)                 { err_put_str = put_str(e, "\\t"); }
+    or (c == 0x0a)                 { err_put_str = put_str(e, "\\n"); }
+    or (c == 0x0c)                 { err_put_str = put_str(e, "\\f"); }
+    or (c == 0x0d)                 { err_put_str = put_str(e, "\\r"); }
+    or (c < 0x20)                  { err_put_str = write_u_hex(e, c::u32); }
+    or (c < 0x80)                  { err_put_str = put_byte(e, c); }
+    or (policy == ESCAPE_VERBATIM) { err_put_str = put_byte(e, c); }
     or                             { ret write_utf8_escape(e, s, i); }
-    if (sel wr.err)                { ret res[usize, WriteError].err{wr.err}; }
+    if (sel err_put_str.err)       { ret res[usize, WriteError].err{err_put_str.err}; }
     ret res[usize, WriteError].ok{next};
 }
 
@@ -59,9 +59,9 @@ pub fun escape_unit(e: *Emit, policy: EscapePolicy, s: *u8, i: usize) res[usize,
 pub fun escape_bytes(e: *Emit, policy: EscapePolicy, s: *u8, slen: usize) err[WriteError] {
     var i: usize = 0;
     for (i < slen) {
-        val r: res[usize, WriteError] = escape_unit(e, policy, s, i);
-        if (sel r.err) { ret err[WriteError].err{r.err}; }
-        i = r.ok;
+        val res_escape_unit: res[usize, WriteError] = escape_unit(e, policy, s, i);
+        if (sel res_escape_unit.err) { ret err[WriteError].err{res_escape_unit.err}; }
+        i = res_escape_unit.ok;
     }
     ret err[WriteError].ok{};
 }
@@ -127,8 +127,8 @@ fun write_utf8_escape(e: *Emit, s: *u8, i: usize) res[usize, WriteError] {
         cp  = (b0 & 0x07)::u32;
     }
     or {
-        val bad: err[WriteError] = write_u_hex(e, 0xFFFD);
-        if (sel bad.err) { ret res[usize, WriteError].err{bad.err}; }
+        val err_bad: err[WriteError] = write_u_hex(e, 0xFFFD);
+        if (sel err_bad.err) { ret res[usize, WriteError].err{err_bad.err}; }
         ret res[usize, WriteError].ok{i + 1};
     }
 
@@ -145,8 +145,8 @@ fun write_utf8_escape(e: *Emit, s: *u8, i: usize) res[usize, WriteError] {
             chi = hi;
         }
         if (cb < clo || cb > chi) {
-            val bad: err[WriteError] = write_u_hex(e, 0xFFFD);
-            if (sel bad.err) { ret res[usize, WriteError].err{bad.err}; }
+            val err_bad: err[WriteError] = write_u_hex(e, 0xFFFD);
+            if (sel err_bad.err) { ret res[usize, WriteError].err{err_bad.err}; }
             ret res[usize, WriteError].ok{i + 1};
         }
         cp = (cp << 6) | (cb & 0x3F)::u32;
@@ -154,8 +154,8 @@ fun write_utf8_escape(e: *Emit, s: *u8, i: usize) res[usize, WriteError] {
         k  = k + 1;
     }
 
-    val wr: err[WriteError] = write_codepoint(e, cp);
-    if (sel wr.err) { ret res[usize, WriteError].err{wr.err}; }
+    val err_write_codepoint: err[WriteError] = write_codepoint(e, cp);
+    if (sel err_write_codepoint.err) { ret res[usize, WriteError].err{err_write_codepoint.err}; }
     ret res[usize, WriteError].ok{i + len};
 }
 
@@ -169,11 +169,11 @@ fun write_utf8_escape(e: *Emit, s: *u8, i: usize) res[usize, WriteError] {
 # cp: the Unicode scalar value
 fun write_codepoint(e: *Emit, cp: u32) err[WriteError] {
     if (cp <= 0xFFFF) { ret write_u_hex(e, cp); }
-    val v:     u32             = cp - 0x10000;
-    val hi:    u32             = 0xD800 + (v >> 10);
-    val lo:    u32             = 0xDC00 + (v & 0x3FF);
-    val first: err[WriteError] = write_u_hex(e, hi);
-    if (sel first.err) { ret first; }
+    val v:         u32             = cp - 0x10000;
+    val hi:        u32             = 0xD800 + (v >> 10);
+    val lo:        u32             = 0xDC00 + (v & 0x3FF);
+    val err_first: err[WriteError] = write_u_hex(e, hi);
+    if (sel err_first.err) { ret err_first; }
     ret write_u_hex(e, lo);
 }
 

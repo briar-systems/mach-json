@@ -87,46 +87,46 @@ fun emit_value(e: *Emit, v: *Value) err[WriteError] {
     }
 
     if (v.kind == STRING) {
-        val open: err[WriteError] = put_byte(e, '"');
-        if (sel open.err) { ret open; }
-        val body: err[WriteError] = escape_bytes(e, ESCAPE_VERBATIM, v.str_val::*u8, v.str_len);
-        if (sel body.err) { ret body; }
+        val err_open: err[WriteError] = put_byte(e, '"');
+        if (sel err_open.err) { ret err_open; }
+        val err_body: err[WriteError] = escape_bytes(e, ESCAPE_VERBATIM, v.str_val::*u8, v.str_len);
+        if (sel err_body.err) { ret err_body; }
         ret put_byte(e, '"');
     }
 
     if (v.kind == ARRAY) {
-        val open: err[WriteError] = put_byte(e, '[');
-        if (sel open.err) { ret open; }
+        val err_open: err[WriteError] = put_byte(e, '[');
+        if (sel err_open.err) { ret err_open; }
         var i: usize = 0;
         for (i < v.count) {
             if (i > 0) {
-                val sep: err[WriteError] = put_byte(e, ',');
-                if (sel sep.err) { ret sep; }
+                val err_sep: err[WriteError] = put_byte(e, ',');
+                if (sel err_sep.err) { ret err_sep; }
             }
-            val elem: err[WriteError] = emit_value(e, ?v.children[i]);
-            if (sel elem.err) { ret elem; }
+            val err_elem: err[WriteError] = emit_value(e, ?v.children[i]);
+            if (sel err_elem.err) { ret err_elem; }
             i = i + 1;
         }
         ret put_byte(e, ']');
     }
 
     if (v.kind == OBJECT) {
-        val open: err[WriteError] = put_byte(e, '{');
-        if (sel open.err) { ret open; }
+        val err_open: err[WriteError] = put_byte(e, '{');
+        if (sel err_open.err) { ret err_open; }
         var i: usize = 0;
         for (i < v.count) {
             if (i > 0) {
-                val sep: err[WriteError] = put_byte(e, ',');
-                if (sel sep.err) { ret sep; }
+                val err_sep: err[WriteError] = put_byte(e, ',');
+                if (sel err_sep.err) { ret err_sep; }
             }
-            val q1: err[WriteError] = put_byte(e, '"');
-            if (sel q1.err) { ret q1; }
-            val key: err[WriteError] = escape_bytes(e, ESCAPE_VERBATIM, v.keys[i]::*u8, v.keys_len[i]);
-            if (sel key.err) { ret key; }
-            val q2: err[WriteError] = put_str(e, "\":");
-            if (sel q2.err) { ret q2; }
-            val elem: err[WriteError] = emit_value(e, ?v.children[i]);
-            if (sel elem.err) { ret elem; }
+            val err_put_byte: err[WriteError] = put_byte(e, '"');
+            if (sel err_put_byte.err) { ret err_put_byte; }
+            val err_key: err[WriteError] = escape_bytes(e, ESCAPE_VERBATIM, v.keys[i]::*u8, v.keys_len[i]);
+            if (sel err_key.err) { ret err_key; }
+            val err_put_str: err[WriteError] = put_str(e, "\":");
+            if (sel err_put_str.err) { ret err_put_str; }
+            val err_elem: err[WriteError] = emit_value(e, ?v.children[i]);
+            if (sel err_elem.err) { ret err_elem; }
             i = i + 1;
         }
         ret put_byte(e, '}');
@@ -161,9 +161,9 @@ $if (capability.HOSTED) {
     # whether src parses and emits back to exactly src
     #[testing]
     fun emits_back(src: *u8, a: *allocator.Allocator) bool {
-        val r: res[Value, JsonError] = parse_text(src, a);
-        if (sel r.err) { ret false; }
-        val v:   Value = r.ok;
+        val res_parse_text: res[Value, JsonError] = parse_text(src, a);
+        if (sel res_parse_text.err) { ret false; }
+        val v:   Value = res_parse_text.ok;
         var buf: [64]u8;
         val n:   usize = emit(?v, ?buf[0], 64);
         ret bytes_are(?buf[0], n, src);
@@ -206,9 +206,9 @@ $if (capability.HOSTED) {
         o.count    = 1;
         val on: usize = emit(?o, ?buf[0], 48);
         if (!bytes_are(?buf[0], on, "{\"a\\\"b\":1}")) { ret 2; }
-        val r: res[Value, JsonError] = parse(?buf[0], on, ?a);
-        if (sel r.err) { ret 3; }
-        val rv: Value = r.ok;
+        val res_parse: res[Value, JsonError] = parse(?buf[0], on, ?a);
+        if (sel res_parse.err) { ret 3; }
+        val rv: Value = res_parse.ok;
         if (rv.kind != OBJECT || rv.count != 1) { ret 4; }
         ret 0;
     }
@@ -226,9 +226,9 @@ $if (capability.HOSTED) {
         var wire: [32]u8;
         val wn:   usize = emit(?src, ?wire[0], 32);
 
-        val r: res[Value, JsonError] = parse(?wire[0], wn, ?a);
-        if (sel r.err) { ret 1; }
-        val pv: Value = r.ok;
+        val res_parse: res[Value, JsonError] = parse(?wire[0], wn, ?a);
+        if (sel res_parse.err) { ret 1; }
+        val pv: Value = res_parse.ok;
         if (pv.kind != STRING)                                          { ret 2; }
         if (!decode_check(pv.str_val::*u8, pv.str_len, ?logical[0], 5)) { ret 3; }
         ret 0;
