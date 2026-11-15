@@ -149,9 +149,9 @@ $if (capability.HOSTED) {
     #[testing]
     use json.value.make_number;
     #[testing]
-    use json.value.make_object;
-    #[testing]
     use json.value.make_string;
+    #[testing]
+    use json.value.object_init;
     use std.allocator;
     use std.allocator.page;
     use std.types.bool.bool;
@@ -199,7 +199,7 @@ $if (capability.HOSTED) {
         var klens:    [1]usize = [1]usize{3};
         var children: [1]Value;
         children[0] = make_number(1);
-        var o: Value = make_object();
+        var o: Value = object_init();
         o.keys     = ?keys[0];
         o.keys_len = ?klens[0];
         o.children = ?children[0];

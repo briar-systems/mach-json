@@ -10,9 +10,9 @@ use json.scan.skip_ws;
 use json.scan.syntax_at;
 use json.value.OBJECT;
 use json.value.Value;
+use json.value.array_init;
 use json.value.dnit;
-use json.value.make_array;
-use json.value.make_object;
+use json.value.object_init;
 use std.allocator;
 use std.memory.raw_copy;
 use std.system.capability;
@@ -139,7 +139,7 @@ fun abandon(p: *Parser, v: *Value, e: JsonError) res[Value, JsonError] {
 fun parse_array(p: *Parser, depth: usize) res[Value, JsonError] {
     if (depth > MAX_DEPTH) { ret res[Value, JsonError].err{JsonError.depth{p.pos}}; }
     p.pos = p.pos + 1;
-    var v: Value = make_array();
+    var v: Value = array_init();
 
     skip_ws(p);
     if (p.pos < p.len && p.src[p.pos] == ']') {
@@ -178,7 +178,7 @@ fun parse_array(p: *Parser, depth: usize) res[Value, JsonError] {
 fun parse_object(p: *Parser, depth: usize) res[Value, JsonError] {
     if (depth > MAX_DEPTH) { ret res[Value, JsonError].err{JsonError.depth{p.pos}}; }
     p.pos = p.pos + 1;
-    var v: Value = make_object();
+    var v: Value = object_init();
 
     skip_ws(p);
     if (p.pos < p.len && p.src[p.pos] == '}') {
@@ -424,7 +424,7 @@ $if (capability.HOSTED) {
     # a second dnit of the released tree is a no-op
     test json__parse_then_dnit_returns_every_byte {
         var tracker:  testing.Testing;
-        val err_made: err[allocator.Error] = testing.make(?tracker);
+        val err_made: err[allocator.Error] = testing.init(?tracker);
         if (sel err_made.err) { ret 1; }
         fin { testing.dnit(?tracker); }
         val a: *allocator.Allocator = testing.allocator_of(?tracker);
@@ -451,7 +451,7 @@ $if (capability.HOSTED) {
     # a document that fails part way releases what it acquired before reporting
     test json__failed_parse_strands_nothing {
         var tracker:  testing.Testing;
-        val err_made: err[allocator.Error] = testing.make(?tracker);
+        val err_made: err[allocator.Error] = testing.init(?tracker);
         if (sel err_made.err) { ret 1; }
         fin { testing.dnit(?tracker); }
         val a: *allocator.Allocator = testing.allocator_of(?tracker);
@@ -486,7 +486,7 @@ $if (capability.HOSTED) {
         var ordinal: usize = 1;
         for (ordinal <= 32) {
             var tracker:  testing.Testing;
-            val err_made: err[allocator.Error] = testing.make(?tracker);
+            val err_made: err[allocator.Error] = testing.init(?tracker);
             if (sel err_made.err) { ret 1; }
             testing.fail_at_ordinal(?tracker, ordinal);
             val a: *allocator.Allocator = testing.allocator_of(?tracker);
@@ -544,7 +544,7 @@ $if (capability.HOSTED) {
     # one more is refused as depth, with nothing stranded
     test json__nesting_bound {
         var tracker:  testing.Testing;
-        val err_made: err[allocator.Error] = testing.make(?tracker);
+        val err_made: err[allocator.Error] = testing.init(?tracker);
         if (sel err_made.err) { ret 1; }
         fin { testing.dnit(?tracker); }
         val a: *allocator.Allocator = testing.allocator_of(?tracker);

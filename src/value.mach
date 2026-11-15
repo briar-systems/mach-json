@@ -299,13 +299,13 @@ pub fun make_string(s: str, slen: usize) Value {
     ret v;
 }
 
-pub fun make_array() Value {
+pub fun array_init() Value {
     var v: Value = make_null();
     v.kind = ARRAY;
     ret v;
 }
 
-pub fun make_object() Value {
+pub fun object_init() Value {
     var v: Value = make_null();
     v.kind = OBJECT;
     ret v;

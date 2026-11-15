@@ -293,7 +293,7 @@ $if (capability.HOSTED) {
     #[testing]
     use json.value.Value;
     #[testing]
-    use json.value.make_array;
+    use json.value.array_init;
     #[testing]
     use json.value.make_number;
     #[testing]
@@ -313,7 +313,8 @@ $if (capability.HOSTED) {
     # buf: destination buffer
     # cap: buffer capacity
     # len: bytes written so far
-    rec TestSink {
+    #[testing]
+    rec Sink {
         buf: *u8;
         cap: usize;
         len: usize;
@@ -321,9 +322,9 @@ $if (capability.HOSTED) {
 
     # writer callback appending to a TestSink, dropping bytes past its capacity
     #[testing]
-    fun test_sink_write(ctx: ptr, buf: *u8, len: usize) res[usize, WriteError] {
-        val s: *TestSink = ctx::*TestSink;
-        var i: usize     = 0;
+    fun sink_write(ctx: ptr, buf: *u8, len: usize) res[usize, WriteError] {
+        val s: *Sink = ctx::*Sink;
+        var i: usize = 0;
         for (i < len && s.len < s.cap) {
             s.buf[s.len] = buf[i];
             s.len        = s.len + 1;
@@ -334,27 +335,27 @@ $if (capability.HOSTED) {
 
     # whether the sink's captured bytes equal the nul-terminated want
     #[testing]
-    fun sink_is(s: *TestSink, want: *u8) bool {
+    fun sink_is(s: *Sink, want: *u8) bool {
         ret bytes_are(s.buf, s.len, want);
     }
 
     # wire a Writer over a TestSink backed by `buf`
     #[testing]
-    fun test_writer(w: *writer.Writer, s: *TestSink, buf: *u8, cap: usize) {
+    fun sink_writer(w: *writer.Writer, s: *Sink, buf: *u8, cap: usize) {
         s.buf     = buf;
         s.cap     = cap;
         s.len     = 0;
         w.ctx     = s::ptr;
-        w.f_write = test_sink_write;
+        w.f_write = sink_write;
     }
 
     # whether write_json_string renders the nul-terminated input as want
     #[testing]
     fun writes_json_string(input: *u8, want: *u8) bool {
         var out:  [64]u8;
-        var sink: TestSink;
+        var sink: Sink;
         var w:    writer.Writer;
-        test_writer(?w, ?sink, ?out[0], 64);
+        sink_writer(?w, ?sink, ?out[0], 64);
         write_json_string(?w, input);
         ret sink_is(?sink, want);
     }
@@ -400,9 +401,9 @@ $if (capability.HOSTED) {
     # arrays, empty arrays included, as one newline-terminated line
     test json__ndjson_object_exact_bytes {
         var out:  [160]u8;
-        var sink: TestSink;
+        var sink: Sink;
         var w:    writer.Writer;
-        test_writer(?w, ?sink, ?out[0], 160);
+        sink_writer(?w, ?sink, ?out[0], 160);
 
         var root: Object;
         object_begin(?w, ?root);
@@ -446,9 +447,9 @@ $if (capability.HOSTED) {
     #[testing]
     fun f64_round_trips(v: f64) bool {
         var out:  [48]u8;
-        var sink: TestSink;
+        var sink: Sink;
         var w:    writer.Writer;
-        test_writer(?w, ?sink, ?out[0], 48);
+        sink_writer(?w, ?sink, ?out[0], 48);
         value_f64(?w, v);
 
         var a: allocator.Allocator;
@@ -526,7 +527,7 @@ $if (capability.HOSTED) {
         # a tree emission through write_value reports the same way
         s.len = 0;
         s.cap = 3;
-        var arr:   Value = make_array();
+        var arr:   Value = array_init();
         var items: [2]Value;
         items[0]     = make_number(12);
         items[1]     = make_number(34);
