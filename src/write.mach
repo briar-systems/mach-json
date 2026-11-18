@@ -183,7 +183,8 @@ $if (capability.HOSTED) {
     }
 
     # string values and object keys escape quotes, backslashes and control
-    # bytes, and the escaped object parses back
+    # bytes; the escaped string parses back and value_string_decode recovers its
+    # logical bytes, and the escaped object parses back
     test json__emit_escapes_strings_and_keys {
         var a: allocator.Allocator;
         page.make(?a);
@@ -193,6 +194,11 @@ $if (capability.HOSTED) {
         val s:   Value  = make_string(((?raw[0])::usize)::str, 11);
         val sn:  usize  = emit(?s, ?buf[0], 48);
         if (!bytes_are(?buf[0], sn, "\"a\\\"b\\\\c\\b\\t\\n\\f\\r\\u0001\"")) { ret 1; }
+        val res_string: res[Value, JsonError] = parse(?buf[0], sn, ?a);
+        if (sel res_string.err) { ret 2; }
+        val sv: Value = res_string.ok;
+        if (sv.kind != STRING)                                       { ret 3; }
+        if (!decode_check(sv.str_val::*u8, sv.str_len, ?raw[0], 11)) { ret 4; }
 
         var keyraw:   [3]u8    = [3]u8{'a', '"', 'b'};
         var keys:     [1]str   = [1]str{((?keyraw[0])::usize)::str};
@@ -205,32 +211,11 @@ $if (capability.HOSTED) {
         o.children = ?children[0];
         o.count    = 1;
         val on: usize = emit(?o, ?buf[0], 48);
-        if (!bytes_are(?buf[0], on, "{\"a\\\"b\":1}")) { ret 2; }
+        if (!bytes_are(?buf[0], on, "{\"a\\\"b\":1}")) { ret 5; }
         val res_parse: res[Value, JsonError] = parse(?buf[0], on, ?a);
-        if (sel res_parse.err) { ret 3; }
+        if (sel res_parse.err) { ret 6; }
         val rv: Value = res_parse.ok;
-        if (rv.kind != OBJECT || rv.count != 1) { ret 4; }
-        ret 0;
-    }
-
-    # emit escapes logical bytes to wire, parse stores the wire bytes raw, and
-    # value_string_decode recovers the original logical bytes
-    test value_string_decode__roundtrip_emit_then_parse {
-        var a: allocator.Allocator;
-        page.make(?a);
-
-        # logical bytes: a <newline> " \ b
-        var logical: [5]u8 = [5]u8{'a', 0x0a, '"', '\\', 'b'};
-        val src:     Value = make_string(((?logical[0])::usize)::str, 5);
-
-        var wire: [32]u8;
-        val wn:   usize = emit(?src, ?wire[0], 32);
-
-        val res_parse: res[Value, JsonError] = parse(?wire[0], wn, ?a);
-        if (sel res_parse.err) { ret 1; }
-        val pv: Value = res_parse.ok;
-        if (pv.kind != STRING)                                          { ret 2; }
-        if (!decode_check(pv.str_val::*u8, pv.str_len, ?logical[0], 5)) { ret 3; }
+        if (rv.kind != OBJECT || rv.count != 1) { ret 7; }
         ret 0;
     }
 }

@@ -259,8 +259,6 @@ $if (capability.HOSTED) {
     use json.value.value_key;
     #[testing]
     use json.value.value_key_len;
-    #[testing]
-    use json.value.value_number;
     use std.allocator.page;
     use std.allocator.testing;
     use std.types.bool.bool;
@@ -370,46 +368,41 @@ $if (capability.HOSTED) {
         ret 0;
     }
 
-    # an index past the last child, a key past the last entry, and a lookup on a
-    # value that is not an object are all absence
+    # a key lookup matches whole keys only, a stored key longer or shorter than
+    # the needle is passed over; an index past the end and a key or lookup on a
+    # value that is not an object are absence
     test json__value_lookup {
         var a: allocator.Allocator;
         page.make(?a);
-        val src:       str                   = "{\"a\":[1,2],\"b\":2}";
-        val res_parse: res[Value, JsonError] = parse(src::*u8, 17, ?a);
+        val res_parse: res[Value, JsonError] = parse_text("{\"bb\":1,\"b\":2,\"bbb\":3,\"a\":[1,2]}", ?a);
         if (sel res_parse.err) { ret 1; }
         var v: Value = res_parse.ok;
         fin { dnit(?a, ?v); }
 
-        val opt_found: opt[*Value] = value_find(?v, "b");
-        if (sel opt_found.none)          { ret 14; }
-        if (opt_found.some.num_val != 2) { ret 15; }
+        val opt_short: opt[*Value] = value_find(?v, "b");
+        if (sel opt_short.none)          { ret 2; }
+        if (opt_short.some.num_val != 2) { ret 3; }
+        val opt_long: opt[*Value] = value_find(?v, "bbb");
+        if (sel opt_long.none)          { ret 4; }
+        if (opt_long.some.num_val != 3) { ret 5; }
         val opt_missing: opt[*Value] = value_find(?v, "z");
-        if (sel opt_missing.some) { ret 16; }
+        if (sel opt_missing.some) { ret 6; }
 
-        val opt_first: opt[*Value] = value_get(?v, 0);
-        if (sel opt_first.none)              { ret 2; }
-        if (!value_is_array(opt_first.some)) { ret 3; }
-        val opt_past: opt[*Value] = value_get(?v, 2);
-        if (sel opt_past.some) { ret 4; }
+        val opt_arr: opt[*Value] = value_get(?v, 3);
+        if (sel opt_arr.none)              { ret 7; }
+        if (!value_is_array(opt_arr.some)) { ret 8; }
+        val opt_past: opt[*Value] = value_get(?v, 4);
+        if (sel opt_past.some) { ret 9; }
 
         val opt_key: opt[str] = value_key(?v, 1);
-        if (sel opt_key.none)                                    { ret 5; }
-        if (opt_key.some[0] != 'b' || value_key_len(?v, 1) != 1) { ret 6; }
-        val opt_no_key: opt[str] = value_key(?v, 2);
-        if (sel opt_no_key.some) { ret 7; }
-
-        val opt_arr: opt[*Value] = value_get(?v, 0);
-        if (sel opt_arr.none) { ret 8; }
-        val opt_elem: opt[*Value] = value_get(opt_arr.some, 1);
-        if (sel opt_elem.none)                { ret 9; }
-        if (value_number(opt_elem.some) != 2) { ret 10; }
-        val opt_no_elem: opt[*Value] = value_get(opt_arr.some, 2);
-        if (sel opt_no_elem.some) { ret 11; }
+        if (sel opt_key.none)                                    { ret 10; }
+        if (opt_key.some[0] != 'b' || value_key_len(?v, 1) != 1) { ret 11; }
+        val opt_no_key: opt[str] = value_key(?v, 4);
+        if (sel opt_no_key.some || value_key_len(?v, 4) != 0) { ret 12; }
         val opt_array_key: opt[str] = value_key(opt_arr.some, 0);
-        if (sel opt_array_key.some) { ret 12; }
+        if (sel opt_array_key.some) { ret 13; }
         val opt_array_find: opt[*Value] = value_find(opt_arr.some, "a");
-        if (sel opt_array_find.some) { ret 13; }
+        if (sel opt_array_find.some) { ret 14; }
         ret 0;
     }
 
