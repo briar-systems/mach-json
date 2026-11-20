@@ -342,11 +342,11 @@ $if (capability.HOSTED) {
     # wire a Writer over a Sink backed by `buf`
     #[testing]
     fun sink_writer(w: *writer.Writer, s: *Sink, buf: *u8, cap: usize) {
-        s.buf     = buf;
-        s.cap     = cap;
-        s.len     = 0;
-        w.ctx     = s::ptr;
-        w.f_write = sink_write;
+        s.buf      = buf;
+        s.cap      = cap;
+        s.len      = 0;
+        w.ctx      = s::ptr;
+        w.fn_write = sink_write;
     }
 
     # whether write_json_string renders the nul-terminated input as want
@@ -508,8 +508,8 @@ $if (capability.HOSTED) {
         s.cap = 12;
         s.len = 0;
         var w: writer.Writer;
-        w.ctx     = (?s)::ptr;
-        w.f_write = fail_sink_write;
+        w.ctx      = (?s)::ptr;
+        w.fn_write = fail_sink_write;
 
         var o:         Object;
         val err_began: err[WriteError] = object_begin(?w, ?o);

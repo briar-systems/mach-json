@@ -41,8 +41,8 @@ pub fun emit(v: *Value, buf: *u8, len: usize) usize {
     b.cap  = len;
     b.pos  = 0;
     var w: writer.Writer;
-    w.ctx     = (?b)::ptr;
-    w.f_write = bufw_write;
+    w.ctx      = (?b)::ptr;
+    w.fn_write = bufw_write;
     # the counting sink accepts every byte, so the outcome is always ok
     write_value(?w, v);
     ret b.pos;
