@@ -1,4 +1,4 @@
-# the json library, what a dependent's `use json;` binds
+# the json library, the modules its prebuilt artifact carries
 # JSON (RFC 8259) reading and writing.
 #
 # JSON parser and emitter

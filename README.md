@@ -17,13 +17,16 @@ git = "https://github.com/briar-systems/mach-json"
 ref = "branch/dev"
 ```
 
-Then bind the library in a source file:
+Then import each module by its source path in the package:
 
 ```mach
-use json;
+use json.ndjson;
+use json.parse;
+use json.value;
+use json.write;
 ```
 
-After `use json;`, `json.parse` reads JSON text into a `json.Value` tree, and the writer functions such as `json.write_value` and `json.object_begin` emit JSON through a `std.io.writer` Writer.
+`parse.parse` reads JSON text into a `value.Value` tree, released with `value.dnit`. `write.write_value` and the streaming functions such as `ndjson.object_begin` emit JSON through a `std.io.writer` Writer. The parse error is `json.error.JsonError`.
 
 
 ## Contributing
