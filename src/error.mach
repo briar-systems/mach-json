@@ -1,0 +1,18 @@
+# the failure tag the parser and the string decoder report through
+
+use std.allocator;
+use std.types.size.usize;
+
+# every way a parse or a string decode can fail
+# ---
+# syntax: the byte at the payload offset is not valid JSON (or, from
+#         value_string_decode, not a valid escape); the offset is into the
+#         source given to parse, or into the raw string bytes being decoded
+# depth:  a container at the payload offset nests deeper than MAX_DEPTH
+# alloc:  growing a container's storage was refused; everything the parse had
+#         acquired is released before it reports
+pub tag JsonError: u8 {
+    syntax: usize;
+    depth:  usize;
+    alloc:  allocator.Error;
+}

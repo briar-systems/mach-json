@@ -1,0 +1,97 @@
+# the json library, the modules its prebuilt artifact carries
+# JSON (RFC 8259) reading and writing.
+#
+# JSON parser and emitter
+#
+# this module hosts two emission surfaces over one escape core:
+#
+#   - the tree emitter (parse/emit/write_value): parses JSON text into a tree
+#     of Value nodes and emits a Value back to JSON text. strings are zero-copy
+#     pointers into the original input buffer (escape sequences are not
+#     unescaped: str_val holds the raw on-wire bytes); the caller must keep the
+#     input alive while values are in use, and releases the tree with dnit.
+#   - the streaming NDJSON emitter (Object/Array/field_*/write_json_string):
+#     writes JSON objects one-per-line through a caller-owned writer, for
+#     machine-consumed output streams. objects nest: a member value or an array
+#     element may itself be an object (field_object_begin / array_object_begin,
+#     closed with object_end_value), and only the top-level object_end writes
+#     the line terminator, so a whole nested object still lands on one line.
+#     every helper reports the writer's outcome, a WriteError whose payload is
+#     the prefix that call persisted before the failure.
+#
+# both surfaces escape string bodies through one escaper (escape_unit) with an
+# explicit policy:
+#
+#   - ESCAPE_VERBATIM (structural-utf8-verbatim): escapes '"', '\', and the C0
+#     controls only; every other byte, including UTF-8 lead/continuation bytes,
+#     passes through verbatim. the tree emitter uses this so valid UTF-8 input
+#     round-trips as UTF-8.
+#   - ESCAPE_ENSURE_ASCII: as above for bytes < 0x80, but each byte >= 0x80 is
+#     UTF-8 decoded (RFC 3629) and emitted as a \uXXXX escape (astral code
+#     points as a surrogate pair); invalid UTF-8 emits the U+FFFD replacement
+#     escape. every emitted byte is printable ASCII on every platform. the
+#     streaming emitter uses this so a machine consumer reads a stable, valid
+#     stream regardless of the bytes a test label or path carries.
+#
+# string bytes have two representations. parse stores the RAW on-wire bytes
+# between the quotes with escapes intact (value_string returns these, zero-copy);
+# emit treats str_val as LOGICAL bytes and escapes '"', '\', and control bytes.
+# the two meanings are bridged by value_string_decode, which resolves the wire
+# escapes of a parsed string into logical bytes at the point of consumption --
+# the inverse of the emit escaper, so decode(parse(emit(v))) recovers v's logical
+# bytes. a parsed tree must therefore be decoded before its strings are treated
+# as logical text: emitting a parsed str_val verbatim double-escapes any wire
+# escapes it held (parse "a\nb" -> raw a\nb -> emit "a\\nb"), so build trees with
+# make_string from already-logical bytes for emission. see mach-std#340.
+
+# the startup a test dispatcher of this library links
+use std.runtime;
+
+fwd json.error.JsonError;
+fwd json.value.Kind;
+fwd json.value.NULL;
+fwd json.value.BOOL;
+fwd json.value.NUMBER;
+fwd json.value.STRING;
+fwd json.value.ARRAY;
+fwd json.value.OBJECT;
+fwd json.parse.MAX_DEPTH;
+fwd json.value.Value;
+fwd json.parse.parse;
+fwd json.value.dnit;
+fwd json.value.value_is_null;
+fwd json.value.value_is_bool;
+fwd json.value.value_is_number;
+fwd json.value.value_is_string;
+fwd json.value.value_is_array;
+fwd json.value.value_is_object;
+fwd json.value.value_bool;
+fwd json.value.value_is_float;
+fwd json.value.value_number;
+fwd json.value.value_float;
+fwd json.value.value_string;
+fwd json.decode.value_string_decode;
+fwd json.value.value_count;
+fwd json.value.value_get;
+fwd json.value.value_key;
+fwd json.value.value_key_len;
+fwd json.value.value_find;
+fwd json.write.emit;
+fwd json.write.write_value;
+fwd json.ndjson.Object;
+fwd json.ndjson.Array;
+fwd json.ndjson.object_begin;
+fwd json.ndjson.object_end;
+fwd json.ndjson.object_end_value;
+fwd json.ndjson.field_object_begin;
+fwd json.ndjson.field_array_begin;
+fwd json.ndjson.array_end;
+fwd json.ndjson.array_object_begin;
+fwd json.ndjson.field_str;
+fwd json.ndjson.field_str_or_null;
+fwd json.ndjson.field_null;
+fwd json.ndjson.field_i64;
+fwd json.ndjson.field_f64;
+fwd json.ndjson.field_bool;
+fwd json.ndjson.value_f64;
+fwd json.ndjson.write_json_string;
